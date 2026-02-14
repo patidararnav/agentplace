@@ -78,6 +78,8 @@ export interface VendorQuote {
   negotiationMessages: NegotiationMessage[];
   customerAgentThoughts: AgentThought[];
   vendorAgentThoughts: AgentThought[];
+  /** Short insight tags generated from the negotiation (e.g. "Competitive anchor", "Warranty included") */
+  insightTags?: string[];
 }
 
 /* ── Booked job ── */
