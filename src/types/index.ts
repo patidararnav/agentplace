@@ -1,14 +1,42 @@
-/* ── Vendor DB Schema ── */
+/* ── Job status: 1=Concierge, 2=Matching, 3=Negotiating, 4=Ranking ── */
+export type JobStatus = 1 | 2 | 3 | 4;
+
+/* ── Jobs DB: one row per job; vendor and consumer reference by id/name ── */
+export interface JobData {
+  job_id: number;
+  vendor_id: number;
+  consumer_name: string;
+  date: string;
+  start_time: string;
+  end_time: string;
+  price: number;
+  type: string;
+  duration_minutes: number;
+  status: JobStatus;
+}
+
+/* ── Vendor DB: no job listings; jobs live in jobs table ── */
 export interface VendorData {
   vendor_id: number;
   name: string;
-  weekly_availability: Record<string, string[]>; // e.g. { "monday": ["09:00","17:00"], ... }
+  weekly_availability: Record<string, string[] | null>;
   max_distance_miles: number;
   home_location: { lat: number; lng: number };
   experience_years: number;
-  negotiation_aggression: number; // 1-10
-  job_types: string[];
-  upcoming_jobs: { date: string; type: string; client?: string }[];
+  negotiation_aggression: number;
+  job_types: { type: string; price: number; duration_minutes: number }[];
+  reviews?: string[];
+  average_rating?: number;
+  total_ratings?: number;
+  job_ids?: number[];
+}
+
+/* ── Consumer DB: identity, count, and list of job ids ── */
+export interface ConsumerData {
+  consumer_name: string;
+  job_count: number;
+  /** List of job_ids for this consumer */
+  job_ids?: number[];
 }
 
 export interface UserLocation {

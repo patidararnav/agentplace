@@ -310,11 +310,13 @@ function addUpcomingJobsForVendor(cat, expYears) {
       consumerJobCount[consumer] = (consumerJobCount[consumer] || 0) + 1;
 
       slots.push({
+        vendor_id: 0, // filled in by caller
         date: dateStr,
         start_time: `${String(startH).padStart(2, '0')}:${String(startM).padStart(2, '0')}`,
         end_time: `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`,
         price: j.price,
         type: j.type,
+        duration_minutes: j.duration_minutes,
         consumer_name: consumer,
       });
       minute = endMinute + rndInt(45, 90); // gap before next job
@@ -325,9 +327,49 @@ function addUpcomingJobsForVendor(cat, expYears) {
   return upcoming;
 }
 
+// Status: 1=Concierge, 2=Matching, 3=Negotiating, 4=Ranking, 5=Booked, 6=In progress, 7=Completed, 8=Payment sent, 9=Payment received
+const JOB_STATUS_BOOKED = 5;
+const PAST_STATUSES = [6, 7, 8, 9]; // 6=In progress, 7=Completed, 8=Payment sent, 9=Payment received
+
+// Short, simple review pool (few variants)
+const REVIEW_POOL = [
+  'Great job!',
+  'On time.',
+  'Professional.',
+  'Would hire again.',
+  'Good work.',
+  'Fast and reliable.',
+  'Very satisfied.',
+  'Nice work.',
+  'Recommended.',
+];
+
+function pickStatus() {
+  return Math.random() < 0.55 ? JOB_STATUS_BOOKED : rnd(PAST_STATUSES);
+}
+
+function generateVendorReviews() {
+  const numReviews = rndInt(0, 10);
+  if (numReviews === 0) return { reviews: [], average_rating: 0, total_ratings: 0 };
+  const ratings = [];
+  const texts = [];
+  for (let i = 0; i < numReviews; i++) {
+    ratings.push(rndInt(3, 5));
+    texts.push(REVIEW_POOL[i % REVIEW_POOL.length]);
+  }
+  const sum = ratings.reduce((a, b) => a + b, 0);
+  const average_rating = Math.round((sum / numReviews) * 10) / 10;
+  return { reviews: texts, average_rating, total_ratings: numReviews };
+}
+
 let vendorId = 1;
-const rows = [];
-const header = 'vendor_id,name,weekly_availability,max_distance_miles,home_location,experience_years,negotiation_aggression,job_types,upcoming_jobs';
+const vendorRows = [];
+const allJobs = [];
+const jobIdsByVendor = {};
+const jobIdsByConsumer = {};
+let jobId = 1;
+
+const vendorHeader = 'vendor_id,name,weekly_availability,max_distance_miles,home_location,experience_years,negotiation_aggression,job_types,job_ids,reviews,average_rating,total_ratings';
 
 for (const cat of CATEGORIES) {
   const jobTypesJson = JSON.stringify(
@@ -346,7 +388,32 @@ for (const cat of CATEGORIES) {
     const aggression = rndInt(1, 3);
 
     const upcoming = addUpcomingJobsForVendor(cat, expYears);
-    const upcomingJson = JSON.stringify(upcoming);
+    if (!jobIdsByVendor[vendorId]) jobIdsByVendor[vendorId] = [];
+
+    for (const job of upcoming) {
+      job.vendor_id = vendorId;
+      const id = jobId++;
+      const status = pickStatus();
+      allJobs.push({
+        job_id: id,
+        vendor_id: vendorId,
+        consumer_name: job.consumer_name,
+        date: job.date,
+        start_time: job.start_time,
+        end_time: job.end_time,
+        price: job.price,
+        type: job.type,
+        duration_minutes: job.duration_minutes,
+        status,
+      });
+      jobIdsByVendor[vendorId].push(id);
+      if (!jobIdsByConsumer[job.consumer_name]) jobIdsByConsumer[job.consumer_name] = [];
+      jobIdsByConsumer[job.consumer_name].push(id);
+    }
+
+    const { reviews, average_rating, total_ratings } = generateVendorReviews();
+    const reviewsJson = JSON.stringify(reviews);
+    const jobIdsJson = JSON.stringify(jobIdsByVendor[vendorId] || []);
 
     const row = [
       vendorId,
@@ -357,15 +424,34 @@ for (const cat of CATEGORIES) {
       expYears,
       aggression,
       jobTypesJson,
-      upcomingJson,
+      jobIdsJson,
+      reviewsJson,
+      average_rating,
+      total_ratings,
     ].map(escapeCsv).join(',');
 
-    rows.push(row);
+    vendorRows.push(row);
     vendorId++;
   }
 }
 
-const csv = [header, ...rows].join('\n');
-const outPath = 'vendor_data.csv';
-fs.writeFileSync(outPath, csv, 'utf8');
-console.log(`Wrote ${rows.length} vendors to ${outPath}`);
+// Write vendor_data.csv (no upcoming_jobs; includes job_ids, reviews, average_rating, total_ratings)
+const vendorCsv = [vendorHeader, ...vendorRows].join('\n');
+fs.writeFileSync('vendor_data.csv', vendorCsv, 'utf8');
+console.log(`Wrote ${vendorRows.length} vendors to vendor_data.csv`);
+
+// Write jobs_data.csv (mix of status 5 and 6–9 for past/completed work)
+const jobsHeader = 'job_id,vendor_id,consumer_name,date,start_time,end_time,price,type,duration_minutes,status';
+const jobRows = allJobs.map((j) =>
+  [j.job_id, j.vendor_id, escapeCsv(j.consumer_name), j.date, j.start_time, j.end_time, j.price, escapeCsv(j.type), j.duration_minutes, j.status].join(',')
+);
+fs.writeFileSync('jobs_data.csv', [jobsHeader, ...jobRows].join('\n'), 'utf8');
+console.log(`Wrote ${allJobs.length} jobs to jobs_data.csv`);
+
+// Write consumer_data.csv (consumer_name, job_count, job_ids)
+const consumerHeader = 'consumer_name,job_count,job_ids';
+const consumerRows = Object.entries(jobIdsByConsumer).map(([consumerName, ids]) =>
+  [escapeCsv(consumerName), ids.length, escapeCsv(JSON.stringify(ids))].join(',')
+);
+fs.writeFileSync('consumer_data.csv', [consumerHeader, ...consumerRows].join('\n'), 'utf8');
+console.log(`Wrote ${consumerRows.length} consumers to consumer_data.csv`);

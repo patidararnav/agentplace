@@ -19,9 +19,10 @@ export const mockVendors: VendorData[] = [
     home_location: { lat: 37.452, lng: -122.12 },
     experience_years: 12,
     negotiation_aggression: 3,
-    job_types: ['Plumbing', 'Pipe Repair', 'Drain Cleaning'],
-    upcoming_jobs: [
-      { date: '2026-02-16', type: 'Pipe Repair', client: 'Johnson' },
+    job_types: [
+      { type: 'Plumbing Repair', price: 150, duration_minutes: 90 },
+      { type: 'Pipe Leak Fix', price: 220, duration_minutes: 120 },
+      { type: 'Drain Cleaning', price: 180, duration_minutes: 60 },
     ],
   },
   {
@@ -38,8 +39,10 @@ export const mockVendors: VendorData[] = [
     home_location: { lat: 37.438, lng: -122.16 },
     experience_years: 8,
     negotiation_aggression: 6,
-    job_types: ['Plumbing', 'Installation', 'Water Heater'],
-    upcoming_jobs: [],
+    job_types: [
+      { type: 'Plumbing', price: 150, duration_minutes: 90 },
+      { type: 'Water Heater Install', price: 1200, duration_minutes: 240 },
+    ],
   },
   {
     vendor_id: 3,
@@ -55,10 +58,10 @@ export const mockVendors: VendorData[] = [
     home_location: { lat: 37.448, lng: -122.14 },
     experience_years: 15,
     negotiation_aggression: 2,
-    job_types: ['Plumbing', 'Emergency Repair', 'Renovation'],
-    upcoming_jobs: [
-      { date: '2026-02-17', type: 'Renovation', client: 'Martinez' },
-      { date: '2026-02-19', type: 'Emergency Repair', client: 'Chen' },
+    job_types: [
+      { type: 'Plumbing', price: 150, duration_minutes: 90 },
+      { type: 'Emergency Repair', price: 280, duration_minutes: 120 },
+      { type: 'Renovation', price: 400, duration_minutes: 240 },
     ],
   },
   {
@@ -73,8 +76,10 @@ export const mockVendors: VendorData[] = [
     home_location: { lat: 37.46, lng: -122.13 },
     experience_years: 5,
     negotiation_aggression: 8,
-    job_types: ['Drain Cleaning', 'Plumbing'],
-    upcoming_jobs: [],
+    job_types: [
+      { type: 'Drain Cleaning', price: 180, duration_minutes: 60 },
+      { type: 'Plumbing', price: 150, duration_minutes: 90 },
+    ],
   },
   {
     vendor_id: 5,
@@ -90,9 +95,11 @@ export const mockVendors: VendorData[] = [
     home_location: { lat: 37.43, lng: -122.17 },
     experience_years: 20,
     negotiation_aggression: 4,
-    job_types: ['Plumbing', 'Heating', 'Water Heater', 'Pipe Repair'],
-    upcoming_jobs: [
-      { date: '2026-02-18', type: 'Water Heater', client: 'Park' },
+    job_types: [
+      { type: 'Plumbing', price: 150, duration_minutes: 90 },
+      { type: 'Heating', price: 250, duration_minutes: 120 },
+      { type: 'Water Heater Install', price: 1200, duration_minutes: 240 },
+      { type: 'Pipe Leak Fix', price: 220, duration_minutes: 120 },
     ],
   },
 ];
