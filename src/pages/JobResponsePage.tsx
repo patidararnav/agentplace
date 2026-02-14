@@ -171,7 +171,7 @@ export function JobResponsePage() {
                     <Button
                       size="sm"
                       className="flex-1 gap-1.5"
-                      onClick={() => navigate('/customer/calendar')}
+                      onClick={() => navigate('/customer/tracking')}
                     >
                       <Check className="size-4" />
                       Accept

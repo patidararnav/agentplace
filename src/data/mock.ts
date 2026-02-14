@@ -97,84 +97,125 @@ export const mockVendors: VendorData[] = [
   },
 ];
 
-/* ── Agent spin-up steps (the wow-factor sequence) ── */
+/* ── Agent spin-up steps — all 8 core agents ── */
 export const mockAgentSteps: AgentStep[] = [
+  // Phase 1: Concierge
   {
-    id: 'parse',
-    label: 'Parsing your request',
-    detail: 'Extracting intent: plumbing repair • Location: Palo Alto • Urgency: this week',
+    id: 'concierge-parse',
+    label: '① Concierge Agent — Parsing request',
+    detail: 'Extracting intent: plumbing repair • Location: Palo Alto, CA • Timeline: this week • Budget: flexible',
     status: 'pending',
+    agentType: 'system',
   },
   {
-    id: 'spawn-customer',
-    label: 'Spinning up Customer Agent',
-    detail: 'Initializing negotiation strategy • Budget optimization enabled • Scheduling preferences loaded',
+    id: 'concierge-clarify',
+    label: '① Concierge Agent — Structuring job spec',
+    detail: 'Category: Plumbing → Repair • Scope: kitchen sink leak • Constraints: weekday preferred • No follow-ups needed',
     status: 'pending',
-    agentType: 'customer',
+    agentType: 'system',
+  },
+  // Phase 2: Matching
+  {
+    id: 'matching-search',
+    label: '② Matching Agent — Searching vendors',
+    detail: 'Hard filters: 847 vendors → 42 plumbing → 12 within 25mi → 5 available this week',
+    status: 'pending',
+    agentType: 'system',
   },
   {
-    id: 'search',
-    label: 'Searching vendor database',
-    detail: 'Filtering 847 vendors → 12 match job type → 5 within range → 5 available this week',
+    id: 'matching-rank',
+    label: '② Matching Agent — Ranking candidates',
+    detail: 'Soft ranking: quality (4.5+ avg) • reliability (95%+ completion) • price history • predicted acceptance: 89%',
     status: 'pending',
+    agentType: 'system',
   },
+  // Phase 3: Quote + Negotiation per vendor
   {
-    id: 'spawn-v1',
-    label: 'Activating agent for QuickFix Plumbing',
-    detail: 'Experience: 12yr • Aggression: Low • Rating: 4.8★ • Starting negotiation...',
+    id: 'quote-v1',
+    label: '③ Quote Agent → QuickFix Plumbing',
+    detail: 'Vendor has auto-pricing: $320/90min base • Requesting custom quote for scope...',
     status: 'pending',
     agentType: 'vendor',
     vendorName: 'QuickFix Plumbing',
   },
   {
-    id: 'spawn-v2',
-    label: 'Activating agent for ProFlow Solutions',
-    detail: 'Experience: 8yr • Aggression: Medium • Rating: 4.5★ • Starting negotiation...',
+    id: 'quote-v2',
+    label: '③ Quote Agent → ProFlow Solutions',
+    detail: 'Manual pricing vendor • Sending job spec and requesting quote...',
     status: 'pending',
     agentType: 'vendor',
     vendorName: 'ProFlow Solutions',
   },
   {
-    id: 'spawn-v3',
-    label: 'Activating agent for Bay Area Plumbing Co',
-    detail: 'Experience: 15yr • Aggression: Low • Rating: 4.9★ • Starting negotiation...',
+    id: 'quote-v3',
+    label: '③ Quote Agent → Bay Area Plumbing Co',
+    detail: 'Vendor has auto-pricing: $360/90min base • High experience premium applied',
     status: 'pending',
     agentType: 'vendor',
     vendorName: 'Bay Area Plumbing Co',
   },
   {
-    id: 'spawn-v4',
-    label: 'Activating agent for Elite Drain Services',
-    detail: 'Experience: 5yr • Aggression: High • Rating: 4.2★ • Starting negotiation...',
+    id: 'negotiate-v1',
+    label: '④ Negotiation Agent ↔ QuickFix',
+    detail: 'Opening at $280 (12% below ask) • Vendor aggression: Low → likely to accept moderate discount',
     status: 'pending',
     agentType: 'vendor',
-    vendorName: 'Elite Drain Services',
+    vendorName: 'QuickFix Plumbing',
   },
   {
-    id: 'spawn-v5',
-    label: 'Activating agent for Sunset Plumbing & Heating',
-    detail: 'Experience: 20yr • Aggression: Low • Rating: 4.7★ • Starting negotiation...',
+    id: 'negotiate-v2',
+    label: '④ Negotiation Agent ↔ ProFlow',
+    detail: 'Opening at $285 • Vendor aggression: Medium → expect counter-offer, holding firm at $310 floor',
     status: 'pending',
     agentType: 'vendor',
-    vendorName: 'Sunset Plumbing & Heating',
+    vendorName: 'ProFlow Solutions',
   },
   {
-    id: 'negotiate',
-    label: 'Agents negotiating',
-    detail: '5 parallel negotiations in progress • Comparing price, availability, and reviews...',
+    id: 'negotiate-v3',
+    label: '④ Negotiation Agent ↔ Bay Area Plumbing',
+    detail: 'Leveraging competing quote as anchor • Vendor aggression: Low → warranty upsell expected',
     status: 'pending',
+    agentType: 'vendor',
+    vendorName: 'Bay Area Plumbing Co',
+  },
+  // Phase 4: Scheduling
+  {
+    id: 'scheduling',
+    label: '⑤ Scheduling Agent — Finding time slots',
+    detail: 'Cross-referencing vendor availability × consumer preference • 3 slots confirmed across top vendors',
+    status: 'pending',
+    agentType: 'system',
+  },
+  // Phase 5: Payment
+  {
+    id: 'payment-ready',
+    label: '⑥ Payment Agent — Preparing escrow',
+    detail: 'Escrow accounts initialized • Cancellation policies loaded • Milestone payment: 100% on completion',
+    status: 'pending',
+    agentType: 'system',
+  },
+  // Phase 6: Fulfillment + Reputation (prepped)
+  {
+    id: 'fulfillment-ready',
+    label: '⑦ Fulfillment Agent — Standing by',
+    detail: 'Will track: arrival → in-progress → completion • Photo proof required • Dispute policy loaded',
+    status: 'pending',
+    agentType: 'system',
   },
   {
-    id: 'rank',
-    label: 'Ranking results',
-    detail: 'Scoring by price (40%) • availability match (30%) • experience (20%) • reviews (10%)',
+    id: 'reputation-ready',
+    label: '⑧ Reputation Agent — Scores loaded',
+    detail: 'Vendor reliability scores cached • Fraud detection active • Post-job review will be prompted',
     status: 'pending',
+    agentType: 'system',
   },
+  // Done
   {
     id: 'done',
-    label: 'Found your best matches',
-    detail: '3 top quotes ready • Average savings: 18% below asking price',
+    label: 'All agents ready — 3 best matches found',
+    detail: 'Avg savings: 18% below asking price • Best: $285 (QuickFix) • All quotes include scheduling + escrow',
     status: 'pending',
+    agentType: 'system',
   },
 ];
 
@@ -193,19 +234,20 @@ export const mockQuotes: VendorQuote[] = [
       { role: 'vendor-agent', text: 'We can do Tuesday 9 AM or Wednesday afternoon. Standard rate is $320 for the first 90 minutes.' },
       { role: 'customer-agent', text: 'Could you do $280? My client is flexible on timing and happy to book a 2-hour window to make scheduling easier.' },
       { role: 'vendor-agent', text: '$285 for 90 minutes is the lowest we can go. That includes parts inspection.' },
-      { role: 'customer-agent', text: 'Deal. Locking in Tuesday 9 AM at $285.' },
+      { role: 'customer-agent', text: 'Deal. Locking in Tuesday 9 AM at $285. Escrow will be initiated on confirmation.' },
     ],
     customerAgentThoughts: [
-      { timestamp: '0:01', text: 'Parsed request: kitchen sink leak, plumbing repair needed', type: 'reasoning' },
-      { timestamp: '0:02', text: 'QuickFix has 12yr experience and low aggression — likely to negotiate fairly', type: 'reasoning' },
-      { timestamp: '0:03', text: 'Opening at $280 (12.5% below asking) — vendor has low aggression so moderate discount should work', type: 'reasoning' },
-      { timestamp: '0:05', text: '$285 is only $5 above target — accepting. 11% savings achieved.', type: 'result' },
+      { timestamp: '0:01', text: 'Concierge parsed request: kitchen sink leak, plumbing repair category', type: 'reasoning' },
+      { timestamp: '0:02', text: 'Matching Agent: QuickFix has 12yr experience, low aggression, 4.8★ rating — top candidate', type: 'reasoning' },
+      { timestamp: '0:03', text: 'Negotiation strategy: open at $280 (12.5% below asking). Vendor aggression=3 → moderate discount likely', type: 'action' },
+      { timestamp: '0:05', text: 'Scheduling Agent: Tuesday 9 AM locked in. Calendar sync sent to both parties.', type: 'action' },
+      { timestamp: '0:06', text: '$285 is $5 above target — accepting. 11% savings achieved. Escrow prepared.', type: 'result' },
     ],
     vendorAgentThoughts: [
-      { timestamp: '0:01', text: 'Incoming request: plumbing repair, 90min estimated', type: 'reasoning' },
-      { timestamp: '0:02', text: 'Tuesday 9 AM slot is open. Standard rate $320/90min.', type: 'reasoning' },
-      { timestamp: '0:04', text: 'Client offered $280 — below our floor of $285. Counter at floor price.', type: 'reasoning' },
-      { timestamp: '0:05', text: 'Accepted at $285. Booking confirmed.', type: 'result' },
+      { timestamp: '0:01', text: 'Incoming job spec: plumbing repair, 90min est. Matches auto-pricing rule.', type: 'reasoning' },
+      { timestamp: '0:02', text: 'Tuesday 9 AM slot is open. Standard rate $320/90min. Auto-quote sent.', type: 'action' },
+      { timestamp: '0:04', text: 'Client offered $280 — below floor of $285. Counter-offering at floor price.', type: 'reasoning' },
+      { timestamp: '0:05', text: 'Accepted at $285. Booking confirmed. Escrow receipt acknowledged.', type: 'result' },
     ],
   },
   {
@@ -221,17 +263,17 @@ export const mockQuotes: VendorQuote[] = [
       { role: 'vendor-agent', text: 'We have Feb 20 at 10 AM. Rate is $360 for 90 min.' },
       { role: 'customer-agent', text: 'I have a competing quote at $285. Can you get closer to that range?' },
       { role: 'vendor-agent', text: 'We can do $295 — we include a 30-day warranty on all work.' },
-      { role: 'customer-agent', text: 'That works. Holding this as option 2.' },
+      { role: 'customer-agent', text: 'That works. Holding this as option 2. Escrow prepped.' },
     ],
     customerAgentThoughts: [
-      { timestamp: '0:01', text: 'Bay Area Plumbing: 15yr experience, low aggression, highest rated', type: 'reasoning' },
-      { timestamp: '0:02', text: 'Their rate is $360 — significantly higher. Leveraging QuickFix quote as anchor', type: 'reasoning' },
-      { timestamp: '0:04', text: '$295 with warranty is competitive. Ranking as #2 — higher quality but $10 more', type: 'result' },
+      { timestamp: '0:01', text: 'Matching Agent: Bay Area Plumbing — 15yr experience, low aggression, 4.9★ highest rated', type: 'reasoning' },
+      { timestamp: '0:02', text: 'Their rate is $360 — significantly higher. Using QuickFix quote as competitive anchor', type: 'reasoning' },
+      { timestamp: '0:04', text: '$295 with warranty is strong value. Ranking as #2 — higher quality, +$10 premium justified', type: 'result' },
     ],
     vendorAgentThoughts: [
-      { timestamp: '0:01', text: 'Request matches our expertise. Feb 20 slot available.', type: 'reasoning' },
-      { timestamp: '0:03', text: 'Client has competing quote at $285. Our floor is $280 but we add warranty value.', type: 'reasoning' },
-      { timestamp: '0:04', text: 'Offering $295 with warranty — differentiates us from competitors.', type: 'result' },
+      { timestamp: '0:01', text: 'Request matches expertise. Feb 20 slot available. Auto-priced at $360.', type: 'reasoning' },
+      { timestamp: '0:03', text: 'Competing quote at $285. Our floor is $280 but we offer warranty differentiation.', type: 'reasoning' },
+      { timestamp: '0:04', text: 'Offering $295 with 30-day warranty — accepted as option 2.', type: 'result' },
     ],
   },
   {
@@ -249,14 +291,14 @@ export const mockQuotes: VendorQuote[] = [
       { role: 'vendor-agent', text: 'Best I can do is $310 for the hour. We use premium parts.' },
     ],
     customerAgentThoughts: [
-      { timestamp: '0:01', text: 'ProFlow: 8yr experience, medium aggression — expect harder negotiation', type: 'reasoning' },
-      { timestamp: '0:03', text: 'They won\'t go below $310. Higher aggression = firmer on price.', type: 'reasoning' },
+      { timestamp: '0:01', text: 'Matching Agent: ProFlow — 8yr experience, medium aggression — harder negotiation expected', type: 'reasoning' },
+      { timestamp: '0:03', text: 'Negotiation: they won\'t go below $310. High aggression = firm pricing.', type: 'reasoning' },
       { timestamp: '0:04', text: '$310 is 11% off asking. Ranking #3 — shorter duration but higher per-hour rate', type: 'result' },
     ],
     vendorAgentThoughts: [
-      { timestamp: '0:01', text: 'Standard kitchen repair job. Have availability this week.', type: 'reasoning' },
-      { timestamp: '0:03', text: 'Client wants $285 — too low for our premium service tier. Holding at $310.', type: 'reasoning' },
-      { timestamp: '0:04', text: 'Final offer $310. Take it or leave it.', type: 'result' },
+      { timestamp: '0:01', text: 'Standard kitchen repair. Have availability. Manual pricing mode.', type: 'reasoning' },
+      { timestamp: '0:03', text: 'Client wants $285 — below our premium service floor. Holding at $310.', type: 'reasoning' },
+      { timestamp: '0:04', text: 'Final offer $310. Auto-accept rule: no further negotiation below floor.', type: 'result' },
     ],
   },
 ];
@@ -299,9 +341,21 @@ export const mockPlannedJobs: PlannedJob[] = [
   },
 ];
 
-/* ── Vendor-side mock services (for vendor dashboard) ── */
+/* ── Vendor-side mock services ── */
 export const mockVendorServices = [
   { id: 1, name: 'Standard Plumbing Repair', rate: 320, bookings: 24, active: true },
   { id: 2, name: 'Emergency Pipe Repair', rate: 450, bookings: 8, active: true },
   { id: 3, name: 'Drain Cleaning', rate: 180, bookings: 31, active: false },
+];
+
+/* ── Fulfillment tracking steps ── */
+export const mockFulfillmentSteps = [
+  { id: 'booked', label: 'Job Booked', detail: 'Escrow payment of $285 secured', time: '2026-02-18T08:00:00', done: true },
+  { id: 'confirmed', label: 'Vendor Confirmed', detail: 'QuickFix Plumbing confirmed for 9:00 AM', time: '2026-02-18T08:15:00', done: true },
+  { id: 'en-route', label: 'Vendor En Route', detail: 'Estimated arrival: 8:55 AM (12 min away)', time: '2026-02-18T08:43:00', done: true },
+  { id: 'arrived', label: 'Vendor Arrived', detail: 'On-site. Work starting.', time: '2026-02-18T08:58:00', done: true },
+  { id: 'in-progress', label: 'Work In Progress', detail: 'Leak identified under sink. Replacing gasket + P-trap.', time: '2026-02-18T09:10:00', done: true },
+  { id: 'completed', label: 'Job Completed', detail: 'Work done. Photo proof uploaded. Awaiting your confirmation.', time: '2026-02-18T10:15:00', done: false },
+  { id: 'payment', label: 'Payment Released', detail: 'Escrow released to vendor upon confirmation', time: '', done: false },
+  { id: 'review', label: 'Leave a Review', detail: 'Rate your experience to help others', time: '', done: false },
 ];

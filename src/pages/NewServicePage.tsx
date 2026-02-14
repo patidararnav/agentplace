@@ -230,6 +230,54 @@ export function NewServicePage() {
 
         <Separator />
 
+        {/* Agent Automation Rules */}
+        <div className="space-y-4">
+          <div>
+            <Label className="text-base">Agent Permissions</Label>
+            <p className="text-sm text-muted-foreground mt-1">
+              Control what your agent can do automatically during negotiations.
+            </p>
+          </div>
+
+          <Card>
+            <CardContent className="pt-4 space-y-1">
+              <div className="flex items-center justify-between py-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Auto-quote</p>
+                  <p className="text-xs text-muted-foreground">Automatically send quotes based on your rate</p>
+                </div>
+                <Switch defaultChecked />
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between py-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Auto-accept bookings</p>
+                  <p className="text-xs text-muted-foreground">Accept jobs within distance &amp; notice constraints</p>
+                </div>
+                <Switch />
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between py-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Allow bundle discounts</p>
+                  <p className="text-xs text-muted-foreground">Agent can offer 10% off for multi-service bookings</p>
+                </div>
+                <Switch defaultChecked />
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between py-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Auto-upsell add-ons</p>
+                  <p className="text-xs text-muted-foreground">Suggest related services during negotiation</p>
+                </div>
+                <Switch defaultChecked />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <Separator />
+
         {/* Weekly Availability */}
         <div className="space-y-4">
           <Label>Weekly Availability</Label>
