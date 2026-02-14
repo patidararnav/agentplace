@@ -21,6 +21,40 @@ const SUGGESTIONS = [
   'Paint my living room walls — neutral tones',
 ];
 
+function inferServiceFromPrompt(prompt: string): string {
+  const lower = prompt.toLowerCase();
+  let service = 'plumbing';
+  if (lower.includes('electric')) service = 'electrical';
+  else if (lower.includes('clean')) service = 'cleaning';
+  else if (lower.includes('paint')) service = 'painting';
+  else if (lower.includes('roof')) service = 'roofing';
+  else if (lower.includes('plumb') || lower.includes('leak') || lower.includes('faucet') || lower.includes('pipe') || lower.includes('drain') || lower.includes('sink')) service = 'plumbing';
+  else if (lower.includes('fan') || lower.includes('install')) service = 'electrical';
+  return service;
+}
+
+function extractMaxBudget(prompt: string): number | null {
+  const text = prompt.toLowerCase();
+
+  // Strong signal: explicit currency mention.
+  const dollarMatch = text.match(/\$\s*([0-9]{2,5})\b/);
+  if (dollarMatch) return parseInt(dollarMatch[1], 10);
+
+  // Soft signal: a number paired with budget-limit wording.
+  const maxBudgetPatterns = [
+    /max(?:imum)?(?:\s+budget)?\s*(?:is|of|:)?\s*\$?\s*([0-9]{2,5})\b/i,
+    /(?:under|below|less than|up to|within)\s*\$?\s*([0-9]{2,5})\b/i,
+    /(?:budget|spend)\s*(?:is|of|around|about)?\s*\$?\s*([0-9]{2,5})\b/i,
+  ];
+
+  for (const pattern of maxBudgetPatterns) {
+    const match = prompt.match(pattern);
+    if (match?.[1]) return parseInt(match[1], 10);
+  }
+
+  return null;
+}
+
 export function PromptPage() {
   const [prompt, setPrompt] = useState('');
   const [consumerOpen, setConsumerOpen] = useState(false);
@@ -28,27 +62,25 @@ export function PromptPage() {
   const [newConsumerName, setNewConsumerName] = useState('');
   const [creatingConsumer, setCreatingConsumer] = useState(false);
   const [consumerError, setConsumerError] = useState('');
+  const [budgetWarningOpen, setBudgetWarningOpen] = useState(false);
   const navigate = useNavigate();
   const { setLastPrompt, setNegotiateParams, consumers, selectedConsumer, setSelectedConsumer, refetchConsumers, dataError } = useApp();
 
-  const handleSubmit = () => {
+  const handleSubmit = (allowAutoBudget = false) => {
     const trimmed = prompt.trim();
     if (!trimmed) return;
+
+    const service = inferServiceFromPrompt(trimmed);
+    const parsedBudget = extractMaxBudget(trimmed);
+
+    if (!parsedBudget && !allowAutoBudget) {
+      setBudgetWarningOpen(true);
+      return;
+    }
+
+    const budget = parsedBudget ?? 200;
     setLastPrompt(trimmed);
-
-    // Parse the prompt into structured params for the backend
-    const lower = trimmed.toLowerCase();
-    let service = 'plumbing';
-    if (lower.includes('electric')) service = 'electrical';
-    else if (lower.includes('clean')) service = 'cleaning';
-    else if (lower.includes('paint')) service = 'painting';
-    else if (lower.includes('roof')) service = 'roofing';
-    else if (lower.includes('plumb') || lower.includes('leak') || lower.includes('faucet') || lower.includes('pipe') || lower.includes('drain') || lower.includes('sink')) service = 'plumbing';
-    else if (lower.includes('fan') || lower.includes('install')) service = 'electrical';
-
-    // Extract budget if mentioned, otherwise default
-    const budgetMatch = trimmed.match(/\$(\d+)/);
-    const budget = budgetMatch ? parseInt(budgetMatch[1], 10) : 200;
+    setBudgetWarningOpen(false);
 
     setNegotiateParams({
       service,
@@ -208,7 +240,7 @@ export function PromptPage() {
             </div>
 
             <Button
-              onClick={handleSubmit}
+              onClick={() => handleSubmit()}
               disabled={!prompt.trim()}
               size="lg"
               className="w-full rounded-xl text-base font-medium gap-2"
@@ -282,6 +314,31 @@ export function PromptPage() {
               />
               <Button onClick={handleCreateConsumer} disabled={!newConsumerName.trim() || creatingConsumer}>
                 {creatingConsumer ? 'Creating…' : 'Create'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Budget warning dialog */}
+      <Dialog open={budgetWarningOpen} onOpenChange={setBudgetWarningOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add a max price?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-muted-foreground">
+              No maximum price was detected in your request. Add a max budget to better guide negotiation.
+            </p>
+            <p className="text-muted-foreground">
+              If you continue, the agent will pick a budget for this request.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="outline" onClick={() => setBudgetWarningOpen(false)}>
+                I&apos;ll add a max price
+              </Button>
+              <Button onClick={() => handleSubmit(true)}>
+                Let agent pick for me
               </Button>
             </div>
           </div>
