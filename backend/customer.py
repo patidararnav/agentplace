@@ -74,6 +74,7 @@ def create_customer_agent(
     startup_delay: float = 0.0,
     result_sink: Optional[Dict[str, Any]] = None,
     finished_event: Optional[asyncio.Event] = None,
+    event_queue: Optional[asyncio.Queue] = None,
 ) -> Agent:
     """Return a fully-wired customer Agent.
 
@@ -81,11 +82,16 @@ def create_customer_agent(
     negotiation results (vendor_results, outcome, winner, etc.).
     If *finished_event* is provided the agent sets it once all negotiations
     are resolved.
+    If *event_queue* is provided the agent pushes real-time events as dicts
+    for streaming to the frontend via WebSocket.
     """
 
     kwargs: Dict[str, Any] = {"name": name.lower().replace(" ", "-"), "seed": seed}
     if port is not None:
         kwargs["port"] = port
+        # Provide an explicit endpoint so the agent registers on the Almanac
+        # and is reachable by other agents (needed when mailbox=False).
+        kwargs["endpoint"] = [f"http://127.0.0.1:{port}/submit"]
     if mailbox:
         kwargs["mailbox"] = True
     if network:
@@ -161,12 +167,21 @@ def create_customer_agent(
         if finished_event is not None:
             finished_event.set()
 
+    def _push_event(evt: Dict[str, Any]) -> None:
+        """Push a real-time event to the WebSocket queue (non-blocking)."""
+        if event_queue is not None:
+            try:
+                event_queue.put_nowait(evt)
+            except Exception:
+                pass
+
     # ── Protocol handlers ──
 
     chat_proto = Protocol(spec=chat_protocol_spec)
 
     @agent.on_event("startup")
     async def on_startup(ctx: Context) -> None:
+        print(f"[DEBUG] Customer {name} on_startup FIRED", flush=True)
         if not os.getenv("AGENTVERSE_KEY") and mailbox:
             ctx.logger.warning("AGENTVERSE_KEY is not set.")
         if startup_delay > 0:
@@ -176,7 +191,9 @@ def create_customer_agent(
             "Sending request  RID=%s  service=%s  budget=$%s",
             rid, service, budget,
         )
-        await ctx.send(orchestrator_address, make_chat_message(_request_text()))
+        print(f"[DEBUG] Customer {name} sending request to orchestrator...", flush=True)
+        result = await ctx.send(orchestrator_address, make_chat_message(_request_text()))
+        print(f"[DEBUG] Customer {name} ctx.send() returned: {result}", flush=True)
 
     @chat_proto.on_message(model=ChatMessage)
     async def handle_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
@@ -204,6 +221,7 @@ def create_customer_agent(
         if mt == "status":
             ctx.logger.info("STATUS: %s", fields.get("TEXT", text))
             _append("statuses", fields.get("TEXT", text))
+            _push_event({"type": "status", "text": fields.get("TEXT", text)})
             return
 
         # ── per-vendor result (consensus mode) ──
@@ -213,14 +231,16 @@ def create_customer_agent(
             price_s = fields.get("PRICE", "0")
             rounds_s = fields.get("ROUNDS", "0")
             ctx.logger.info("VENDOR RESULT: %s  [%s]", vn, outcome)
-            _append("vendor_results", {
+            vr = {
                 "vendor_name": vn,
                 "vendor_address": fields.get("VENDOR", ""),
                 "outcome": outcome,
                 "price": int(price_s) if price_s.isdigit() else 0,
                 "rounds": int(rounds_s) if rounds_s.isdigit() else 0,
                 "text": fields.get("TEXT", text),
-            })
+            }
+            _append("vendor_results", vr)
+            _push_event({"type": "vendor_result", **vr})
             return
 
         # ── deal closed (final consensus or first-deal) ──
@@ -233,6 +253,12 @@ def create_customer_agent(
             _record("winner", fields.get("WINNER", ""))
             wp = fields.get("WINNER_PRICE", "0")
             _record("winner_price", int(wp) if wp.isdigit() else 0)
+            _push_event({
+                "type": "deal_closed",
+                "text": txt,
+                "winner": fields.get("WINNER", ""),
+                "winner_price": int(wp) if wp.isdigit() else 0,
+            })
             _finish()
             return
 
@@ -241,6 +267,7 @@ def create_customer_agent(
             txt = fields.get("TEXT", text)
             ctx.logger.info("TERMINATED: %s", txt)
             _append("terminations", txt)
+            _push_event({"type": "terminated", "text": txt})
             if any(p in txt for p in [
                 "All vendor negotiations ended",
                 "All vendors unavailable",
@@ -249,6 +276,7 @@ def create_customer_agent(
                 terminated = True
                 _record("outcome", "no_deal")
                 _record("outcome_text", txt)
+                _push_event({"type": "done", "outcome": "no_deal", "text": txt})
                 _finish()
             return
 
@@ -269,7 +297,28 @@ def create_customer_agent(
             cp = vp
         counters[va] = cp
 
+        # Push vendor message event
+        vendor_text = fields.get("TEXT", text)
+        _push_event({
+            "type": "negotiation_msg",
+            "role": "vendor-agent",
+            "vendor_address": va,
+            "vendor_name": vendor_text.split(":")[0] if ":" in vendor_text else "Vendor",
+            "price": vp,
+            "text": vendor_text,
+        })
+
         body = await _customer_text(cp, vp)
+
+        # Push customer counter event
+        _push_event({
+            "type": "negotiation_msg",
+            "role": "customer-agent",
+            "vendor_address": va,
+            "price": cp,
+            "text": body,
+        })
+
         await ctx.send(
             orchestrator_address,
             make_chat_message("\n".join([

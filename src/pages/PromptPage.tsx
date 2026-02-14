@@ -29,7 +29,7 @@ export function PromptPage() {
   const [creatingConsumer, setCreatingConsumer] = useState(false);
   const [consumerError, setConsumerError] = useState('');
   const navigate = useNavigate();
-  const { setLastPrompt, userLocation, setUserLocation, consumers, selectedConsumer, setSelectedConsumer, refetchConsumers, dataError } = useApp();
+  const { setLastPrompt, setNegotiateParams, userLocation, setUserLocation, consumers, selectedConsumer, setSelectedConsumer, refetchConsumers, dataError } = useApp();
 
   useEffect(() => {
     if (!userLocation) setUserLocation({ lat: 37.4419, lng: -122.143 });
@@ -39,6 +39,29 @@ export function PromptPage() {
     const trimmed = prompt.trim();
     if (!trimmed) return;
     setLastPrompt(trimmed);
+
+    // Parse the prompt into structured params for the backend
+    const lower = trimmed.toLowerCase();
+    let service = 'plumbing';
+    if (lower.includes('electric')) service = 'electrical';
+    else if (lower.includes('clean')) service = 'cleaning';
+    else if (lower.includes('paint')) service = 'painting';
+    else if (lower.includes('roof')) service = 'roofing';
+    else if (lower.includes('plumb') || lower.includes('leak') || lower.includes('faucet') || lower.includes('pipe') || lower.includes('drain') || lower.includes('sink')) service = 'plumbing';
+    else if (lower.includes('fan') || lower.includes('install')) service = 'electrical';
+
+    // Extract budget if mentioned, otherwise default
+    const budgetMatch = trimmed.match(/\$(\d+)/);
+    const budget = budgetMatch ? parseInt(budgetMatch[1], 10) : 200;
+
+    setNegotiateParams({
+      service,
+      budget,
+      urgency: 3,
+      aggression: 3,
+      notes: trimmed,
+    });
+
     navigate('/customer/agents');
   };
 

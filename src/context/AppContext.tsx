@@ -1,7 +1,18 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
-import type { UserLocation, VendorData, ConsumerData, JobData } from '@/types';
+import type { UserLocation, VendorData, ConsumerData, JobData, VendorQuote } from '@/types';
 import { defaultUserLocation } from '@/data/mock';
 import { fetchVendors, fetchConsumers, fetchJobs } from '@/lib/supabase-data';
+import type { NegotiateParams } from '@/lib/api';
+import type { VendorNegotiation, VendorResultEvent } from '@/hooks/useNegotiation';
+
+/** Negotiation results stored after the agent orchestration completes */
+export interface NegotiationResults {
+  quotes: VendorQuote[];
+  stats: { vendorsSearched: number; vendorsNegotiated: number; avgSavings: number };
+  outcome: string;
+  winner: string;
+  winnerPrice: number;
+}
 
 interface AppState {
   userLocation: UserLocation | null;
@@ -22,6 +33,12 @@ interface AppState {
   setSelectedVendor: (v: VendorData | null) => void;
   selectedConsumer: ConsumerData | null;
   setSelectedConsumer: (c: ConsumerData | null) => void;
+  /** Parameters for the current negotiation (set from PromptPage) */
+  negotiateParams: NegotiateParams | null;
+  setNegotiateParams: (p: NegotiateParams | null) => void;
+  /** Results from the completed negotiation (set from AgentMatchingPage) */
+  negotiationResults: NegotiationResults | null;
+  setNegotiationResults: (r: NegotiationResults | null) => void;
 }
 
 const AppContext = createContext<AppState | null>(null);
@@ -36,6 +53,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [dataError, setDataError] = useState<{ vendors?: string; consumers?: string; jobs?: string }>({});
   const [selectedVendor, setSelectedVendor] = useState<VendorData | null>(null);
   const [selectedConsumer, setSelectedConsumer] = useState<ConsumerData | null>(null);
+  const [negotiateParams, setNegotiateParams] = useState<NegotiateParams | null>(null);
+  const [negotiationResults, setNegotiationResults] = useState<NegotiationResults | null>(null);
 
   const refetchVendors = useCallback(async () => {
     const result = await fetchVendors();
@@ -98,6 +117,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setSelectedVendor,
         selectedConsumer,
         setSelectedConsumer,
+        negotiateParams,
+        setNegotiateParams,
+        negotiationResults,
+        setNegotiationResults,
       }}
     >
       {children}

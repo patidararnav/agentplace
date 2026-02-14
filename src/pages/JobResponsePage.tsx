@@ -15,10 +15,10 @@ import {
   Calendar,
   MessageSquare,
 } from 'lucide-react';
-import { mockQuotes, mockJobStats } from '@/data/mock';
 import { NegotiationChatModal } from '@/components/NegotiationChatModal';
 import { updateJobStatus } from '@/lib/supabase-data';
 import type { VendorQuote } from '@/types';
+import { useApp } from '@/context/AppContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -48,12 +48,13 @@ const JOB_STATUS_BOOKED = 5;
 
 export function JobResponsePage() {
   const navigate = useNavigate();
+  const { negotiationResults } = useApp();
   const [selectedChat, setSelectedChat] = useState<VendorQuote | null>(null);
   const [selectedCoT, setSelectedCoT] = useState<VendorQuote | null>(null);
   const [acceptedQuote, setAcceptedQuote] = useState<VendorQuote | null>(null);
 
-  const stats = mockJobStats;
-  const quotes = mockQuotes;
+  const stats = negotiationResults?.stats ?? { vendorsSearched: 0, vendorsNegotiated: 0, avgSavings: 0 };
+  const quotes = negotiationResults?.quotes ?? [];
 
   async function handleAccept(q: VendorQuote) {
     if (q.job_id != null) {
@@ -90,6 +91,18 @@ export function JobResponsePage() {
       {/* Quotes */}
       <main className="flex-1 overflow-auto px-6 py-6">
         <div className="max-w-3xl mx-auto space-y-4">
+          {quotes.length === 0 && (
+            <div className="text-center py-20 space-y-3">
+              <Sparkles className="size-10 text-muted-foreground/30 mx-auto" />
+              <h2 className="text-lg font-semibold text-foreground">No quotes yet</h2>
+              <p className="text-sm text-muted-foreground">
+                Submit a request from the home page to get real vendor quotes via agent negotiation.
+              </p>
+              <Button variant="outline" onClick={() => navigate('/')}>
+                Go to home
+              </Button>
+            </div>
+          )}
           {quotes.map((q, idx) => {
             const savings = Math.round(
               ((q.originalPrice - q.price) / q.originalPrice) * 100

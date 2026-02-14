@@ -7,9 +7,23 @@
 >
 > A multi-agent marketplace where autonomous AI agents negotiate home-service deals in natural language, powered by ASI:One LLM and deployed on Agentverse.
 
-## Demo Video
+---
 
-<!-- TODO: Add 3-5 minute demo video link here -->
+## Table of Contents
+
+- [How It Works](#how-it-works)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Quick Start (Local Dev)](#quick-start-local-dev)
+- [Usage](#usage)
+- [API Reference](#api-reference)
+- [Project Structure](#project-structure)
+- [Environment Variables](#environment-variables)
+- [Deployment](#deployment)
+- [Key Features](#key-features)
+- [License](#license)
+
+---
 
 ## How It Works
 
@@ -21,150 +35,364 @@ A **customer** asks for a service (e.g. "I need a plumber, budget $200"). The sy
 4. The **Customer Agent** reviews each vendor's quote. If over budget, it produces a counter-offer (also LLM-generated). If within budget, it accepts.
 5. After each round, the **Orchestrator** checks convergence — using both a fast-path price-gap heuristic and an **ASI:One LLM referee** that reads the full negotiation transcript.
 6. Once all vendors resolve (deal, terminated, or unavailable), the Orchestrator picks the **best deal** (lowest price) and notifies all parties.
+7. The React frontend receives every event in real time via WebSocket and displays the live orchestration.
+
+---
+
+## Architecture
 
 ```
-┌──────────┐   Chat Protocol   ┌──────────────┐   Chat Protocol   ┌────────────┐
-│ Customer │ ◄───────────────► │ Orchestrator │ ◄───────────────► │  Vendor A  │
-│  Agent   │                   │    Agent     │                   │   Agent    │
-└──────────┘                   │              │   Chat Protocol   ├────────────┤
-                               │  ┌────────┐  │ ◄───────────────► │  Vendor B  │
-                               │  │ASI:One │  │                   │   Agent    │
-                               │  │ LLM    │  │   Chat Protocol   ├────────────┤
-                               │  │Referee │  │ ◄───────────────► │  Vendor C  │
-                               │  └────────┘  │                   │   Agent    │
-                               └──────────────┘                   └────────────┘
+Browser (React + Vite)
+  │
+  │  HTTP POST /api/negotiate       WebSocket /ws/negotiate/:id
+  │  HTTP POST /api/vendors          ↕ real-time events
+  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  FastAPI Bridge Server  (uvicorn :8080)                         │
+│                                                                 │
+│  ┌──────────────┐    ┌────────────┐ ┌────────────┐ ┌────────┐  │
+│  │ Orchestrator │◄──►│ Vendor A   │ │ Vendor B   │ │Vendor C│  │
+│  │ (mailbox=T)  │    │ (local)    │ │ (local)    │ │(local) │  │
+│  │ port 8001    │    │ port 8101  │ │ port 8102  │ │  8103  │  │
+│  └──────┬───────┘    └────────────┘ └────────────┘ └────────┘  │
+│         │                                                       │
+│         │  Per-request:                                         │
+│  ┌──────▼────────┐                                              │
+│  │ Customer Agent │  (ephemeral, local, mailbox=False)          │
+│  │ port 9200+     │                                             │
+│  └────────────────┘                                             │
+│         │                                                       │
+│         ▼                                                       │
+│  ┌─────────────┐                                                │
+│  │   ASI:One   │  LLM for negotiation text + convergence        │
+│  │     LLM     │                                                │
+│  └─────────────┘                                                │
+└─────────────────────────────────────────────────────────────────┘
+          │
+          ▼
+   Agentverse (testnet)
+   Orchestrator mailbox registered + discoverable via ASI:One
 ```
 
-## Agents on Agentverse
+**Agent registration strategy:**
 
-All agents are registered on Agentverse (testnet) and discoverable via ASI:One.
+| Agent | Mailbox | Endpoint | Setup |
+|-------|---------|----------|-------|
+| **Orchestrator** | `mailbox=True` (Agentverse) | Mailbox | One-time manual setup via [Agent Inspector](https://agentverse.ai/inspect) |
+| **Vendor agents** | `mailbox=False` | `http://127.0.0.1:<port>/submit` | Automatic — no manual setup |
+| **Customer agents** | `mailbox=False` | `http://127.0.0.1:<port>/submit` | Automatic — ephemeral, created per request |
 
-| Agent | Address | Agentverse Inspector |
-|-------|---------|---------------------|
-| **Orchestrator** | `agent1q0sewr2pg82xzuqzvj98usjdtc9zyrdlrgpsqh0gp4uw4cvh3ujp7452dwu` | [Inspect](https://agentverse.ai/inspect/?uri=http%3A//127.0.0.1%3A8001&address=agent1q0sewr2pg82xzuqzvj98usjdtc9zyrdlrgpsqh0gp4uw4cvh3ujp7452dwu) |
-| **Vendor (LocalPlumbCo)** | `agent1q2lsm8uvrxjpjssh3mfaafvfnvuw46tzl9fzqtpj7ltepmca57tuu08wqyz` | [Inspect](https://agentverse.ai/inspect/?uri=http%3A//127.0.0.1%3A8000&address=agent1q2lsm8uvrxjpjssh3mfaafvfnvuw46tzl9fzqtpj7ltepmca57tuu08wqyz) |
-| **Customer** | `agent1qtnplu75c503af54npnpynjvzc0zulcjj3d2lv9kuftaefetml7hykfg526` | [Inspect](https://agentverse.ai/inspect/?uri=http%3A//127.0.0.1%3A8002&address=agent1qtnplu75c503af54npnpynjvzc0zulcjj3d2lv9kuftaefetml7hykfg526) |
+---
 
-## Tech Stack
+## Prerequisites
 
-- **[uAgents](https://github.com/fetchai/uAgents)** — Fetch.ai agent framework with Chat Protocol
-- **[Agentverse](https://agentverse.ai)** — Agent registration, mailbox networking, Almanac contract
-- **[ASI:One](https://asi1.ai)** — LLM powering natural-language negotiation and convergence decisions
-- **Python 3.11+**
+| Dependency | Version | Notes |
+|------------|---------|-------|
+| **Python** | 3.11+ | Backend agents + FastAPI server |
+| **Node.js** | 20.19+ or 22+ | Vite requires modern Node |
+| **npm** | 9+ | Frontend package manager |
+| **Agentverse API key** | — | Get one at [agentverse.ai](https://agentverse.ai) |
+| **ASI:One API key** | — | Get one at [asi1.ai/dashboard/api-keys](https://asi1.ai/dashboard/api-keys) |
 
-## Key Features
+---
 
-- **Natural-language negotiation** — Vendor and customer agents converse in plain English, not rigid schemas.
-- **LLM-driven convergence** — ASI:One acts as a neutral referee, analyzing transcripts to decide DEAL / TERMINATE / CONTINUE.
-- **Multi-vendor consensus** — The orchestrator negotiates with all matching vendors in parallel and selects the best outcome.
-- **Configurable agent personalities** — Aggression level (1–5) controls how flexible or firm each agent negotiates.
-- **Chat Protocol compliance** — Full `ChatMessage` / `ChatAcknowledgement` protocol for ASI:One discoverability.
-- **Factory-pattern architecture** — Agents are created via reusable factory functions, making it easy to deploy new vendor/customer instances.
+## Quick Start (Local Dev)
 
-## Quickstart
-
-### Prerequisites
-
-- Python 3.11+
-- An [Agentverse](https://agentverse.ai) API key
-- An [ASI:One](https://asi1.ai/dashboard/api-keys) API key
-
-### Setup
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/your-team/agentplace.git
 cd agentplace
+```
+
+**Backend (Python):**
+
+```bash
+cd backend
 python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate       # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your AGENTVERSE_KEY and ASI1_API_KEY
 ```
 
-### Run on Agentverse (Production)
-
-Start each agent in a **separate terminal**:
+**Frontend (Node):**
 
 ```bash
-# Terminal 1 — Orchestrator
-python orchestrator.py
-
-# Terminal 2 — Vendor
-python vendor.py
-
-# Terminal 3 — Customer
-python customer.py
+# From the project root (not backend/)
+npm install
 ```
 
-Each agent will:
-- Register on the Almanac contract (testnet)
-- Connect to Agentverse mailbox
-- Publish its Chat Protocol manifest for ASI:One discoverability
-
-Run **multiple vendor agents** by overriding env vars per terminal:
+### 2. Configure environment
 
 ```bash
-VENDOR_NAME=QuickFixPro VENDOR_SEED=vendor2_seed VENDOR_PORT=8003 \
-  VENDOR_SERVICES=plumbing,electrical VENDOR_BASE_PRICES=plumbing:180,electrical:200 \
-  VENDOR_AGGRESSION=4 python vendor.py
+cp backend/.env.example backend/.env
 ```
 
-### Local Simulation (Bureau)
+Edit `backend/.env` and fill in your keys:
 
-For local testing without Agentverse:
+```env
+AGENTVERSE_KEY=your_agentverse_key_here
+ASI1_API_KEY=your_asi1_api_key_here
+```
+
+### 3. SSL fix (macOS)
+
+If you see `SSL: CERTIFICATE_VERIFY_FAILED` errors, run this before starting the backend:
 
 ```bash
-python simulate_vendor_selection.py --config simulation_config.example.json
+export SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")
 ```
 
-This runs all agents in a single process using `Bureau`, with consensus mode enabled to negotiate with all vendors and pick the best deal.
+### 4. Set up the Orchestrator mailbox (one-time)
+
+The orchestrator is the only agent that needs manual Agentverse mailbox setup:
+
+1. Start the backend once (step 5 below).
+2. Copy the orchestrator's address from the terminal logs.
+3. Go to the [Agent Inspector](https://agentverse.ai/inspect) and create a mailbox for that address.
+4. Restart the backend. You should see `Successfully registered as mailbox agent in Agentverse`.
+
+### 5. Start the backend
+
+```bash
+cd backend
+source venv/bin/activate
+uvicorn server:app --port 8080 --host 0.0.0.0
+```
+
+You'll see color-coded terminal output:
+
+```
+━━━ AgentPlace Server Starting ━━━
+[orchestrator]  address=agent1q0sewr2...  port=8001  mailbox=True
+[vendor]  RapidRooter   address=agent1qvm5r...  port=8101
+[vendor]  BudgetFix     address=agent1qgdh...   port=8102
+[vendor]  PremiumPipes  address=agent1qga0...   port=8103
+━━━ 4 persistent agents launched (orchestrator + 3 vendors) ━━━
+```
+
+### 6. Start the frontend
+
+In a separate terminal:
+
+```bash
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+> Vite automatically proxies `/api` and `/ws` requests to the backend on port 8080.
+
+---
+
+## Usage
+
+### Customer Flow
+
+1. **Home page** — type a plain-English request like "Fix a leak under my kitchen sink, budget $200".
+2. **Agent Orchestration** — watch the 4-step agent pipeline run in real time:
+   - **Concierge** — parses your request into a structured job spec
+   - **Matching** — routes the request to the orchestrator, which dispatches to vendors
+   - **Negotiation** — agents negotiate with vendors via ASI:One LLM
+   - **Ranking** — deals are ranked by price
+3. **Results** — see the top vendor quotes with prices, savings percentages, and negotiation transcripts. Click "Agent reasoning" to see each agent's chain-of-thought.
+4. **Accept** — book a vendor. The job moves to the calendar and fulfillment tracking.
+
+### Vendor Flow
+
+1. Click **"Vendor mode"** (top-right on the home page).
+2. **Create a vendor** — fill in name, services, prices, aggression level. This:
+   - Saves the vendor to Supabase
+   - Spins up a live vendor agent on the backend (logged in the terminal)
+3. **Add services** — add new service types to an existing vendor.
+4. The vendor agent is now active and will participate in future customer negotiations.
+
+### What shows in the terminal
+
+Every agent action is logged with color codes:
+
+```
+[API]     POST /api/negotiate  session=0b45aa38  service=plumbing  budget=$200
+[0b45aa38] Starting negotiation  service=plumbing  budget=$200
+[0b45aa38] Customer agent created  address=agent1qfzr4...  port=9200
+[0b45aa38] customer-agent @ $180: I'd like to request plumbing service...
+[0b45aa38] vendor-agent   @ $210: We can offer plumbing at $210...
+[0b45aa38] VENDOR RESULT: RapidRooter [deal] $195 (3 rounds)
+[0b45aa38] VENDOR RESULT: BudgetFix [deal] $185 (2 rounds)
+[0b45aa38] ✓ DONE  outcome=deal  winner=BudgetFix  price=$185
+```
+
+---
+
+## API Reference
+
+All endpoints are served by the FastAPI backend on port 8080. In dev, Vite proxies them automatically.
+
+### Negotiation
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/negotiate` | Start a new negotiation. Body: `{ service, budget, urgency, aggression, notes }`. Returns `{ session_id }`. |
+| `WS` | `/ws/negotiate/:session_id` | WebSocket stream of real-time negotiation events (step, log, negotiation_msg, vendor_result, done). |
+| `GET` | `/api/session/:session_id` | Polling fallback — returns session status and result. |
+
+### Vendor Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/vendors` | Register a new vendor agent. Body: `{ name, services, base_prices, aggression }`. Returns `{ name, address, port, services }`. |
+| `POST` | `/api/vendors/service` | Add a service to an existing vendor. Body: `{ vendor_name, service_name, job_type, price, duration_minutes }`. |
+
+### Debug / Health
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/health` | Health check. Returns `{ status, orchestrator }`. |
+| `GET` | `/api/agents` | List all registered agents (orchestrator + vendors). |
+
+---
 
 ## Project Structure
 
 ```
 agentplace/
-├── orchestrator.py        # Orchestrator agent (vendor registry, routing, convergence)
-├── vendor.py              # Vendor agent (pricing, negotiation, LLM responses)
-├── customer.py            # Customer agent (requests, counter-offers, deal tracking)
-├── chat_utils.py          # Shared utilities (LLM client, message parsing)
-├── simulate_vendor_selection.py  # Local E2E simulation via Bureau
-├── simulation_config.example.json  # Config for simulation scenarios
-├── .env.example           # Environment variable template
-├── requirements.txt       # Python dependencies
-├── README.md              # This file
-├── README_ORCHESTRATOR.md # Orchestrator agent README (published to Agentverse)
-├── README_VENDOR.md       # Vendor agent README (published to Agentverse)
-└── README_CUSTOMER.md     # Customer agent README (published to Agentverse)
+├── backend/
+│   ├── server.py               # FastAPI bridge — launches agents, HTTP + WebSocket endpoints
+│   ├── orchestrator.py         # Orchestrator agent factory (vendor registry, routing, convergence)
+│   ├── vendor.py               # Vendor agent factory (pricing, negotiation, LLM responses)
+│   ├── customer.py             # Customer agent factory (requests, counter-offers, deal tracking)
+│   ├── chat_utils.py           # Shared utilities (ASI:One LLM client, message parsing)
+│   ├── requirements.txt        # Python dependencies
+│   ├── .env.example            # Environment variable template
+│   └── .env                    # Your local config (git-ignored)
+│
+├── src/                        # React frontend (Vite + TypeScript)
+│   ├── pages/
+│   │   ├── PromptPage.tsx      # Home — customer enters plain-English request
+│   │   ├── AgentMatchingPage.tsx  # Real-time agent orchestration visualization
+│   │   ├── JobResponsePage.tsx # Top quotes with negotiation transcripts
+│   │   ├── JobCalendarPage.tsx # Calendar of booked jobs
+│   │   ├── FulfillmentPage.tsx # Job tracking / fulfillment timeline
+│   │   ├── VendorDashboard.tsx # Vendor portal — view services, stats
+│   │   ├── NewVendorPage.tsx   # Create vendor → Supabase + backend agent
+│   │   └── NewServicePage.tsx  # Add service to vendor agent
+│   ├── hooks/
+│   │   └── useNegotiation.ts   # WebSocket hook — manages real-time negotiation state
+│   ├── lib/
+│   │   ├── api.ts              # Backend API client (startNegotiation, connectNegotiationWS)
+│   │   └── supabase-data.ts    # Supabase CRUD (vendors, consumers, jobs)
+│   ├── context/
+│   │   └── AppContext.tsx       # Global state (negotiateParams, negotiationResults, etc.)
+│   ├── types/
+│   │   └── index.ts            # TypeScript interfaces
+│   └── data/
+│       └── mock.ts             # Default location only (all mock data removed)
+│
+├── vite.config.ts              # Vite config with proxy to backend :8080
+├── package.json                # Frontend dependencies
+└── README.md                   # This file
 ```
+
+---
 
 ## Environment Variables
 
-See [`.env.example`](.env.example) for the full list. Key variables:
+Create `backend/.env` from `backend/.env.example`. Key variables:
 
-| Variable | Description |
-|----------|-------------|
-| `AGENTVERSE_KEY` | Agentverse API key for mailbox + registration |
-| `ASI1_API_KEY` | ASI:One API key for LLM-powered negotiation |
-| `ORCHESTRATOR_ADDRESS` | Orchestrator's agent address (shared by vendor/customer) |
-| `ORCHESTRATOR_SEED` | Deterministic seed for orchestrator identity |
-| `VENDOR_SEED` | Deterministic seed for vendor identity |
-| `CUSTOMER_SEED` | Deterministic seed for customer identity |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `AGENTVERSE_KEY` | Yes | Agentverse API key for orchestrator mailbox |
+| `ASI1_API_KEY` | Yes | ASI:One API key for LLM negotiation + convergence |
+| `ORCHESTRATOR_SEED` | No | Deterministic seed for orchestrator identity (default provided) |
+| `ORCHESTRATOR_PORT` | No | Port for orchestrator local server (default: `8001`) |
+| `MAX_NEGOTIATION_ROUNDS` | No | Max rounds before force-closing (default: `8`) |
 
-## Architecture Highlights
+Vendor agents are configured in `server.py`'s `VENDOR_DEFS` array, or created dynamically via `POST /api/vendors`.
 
-### Reusable Factory Functions
+---
 
-Each agent module exports a factory function (`create_vendor_agent()`, `create_customer_agent()`, `create_orchestrator_agent()`) that returns a fully-wired `Agent` instance. This means:
+## Deployment
 
-- **Zero code duplication** — the simulation and production scripts use the exact same logic.
-- **Easy deployment** — spin up new vendor/customer agents with a single function call.
-- **Frontend-ready** — a web UI can import and instantiate agents programmatically.
+### Option A: Single-machine (recommended for demo)
 
-### Convergence Algorithm
+Run both backend and frontend on the same machine:
 
-1. **Fast path**: If the vendor and customer prices are within a 4% band of the budget, close the deal immediately.
-2. **Max rounds**: If negotiations exceed the configured limit, force a deal (if vendor is within budget) or terminate.
-3. **LLM referee**: For rounds 3+, the ASI:One LLM analyzes the full transcript and returns `DEAL|PRICE|REASON`, `TERMINATE|0|REASON`, or `CONTINUE|0|REASON`.
+```bash
+# Terminal 1: Backend
+cd backend && source venv/bin/activate
+export SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")
+uvicorn server:app --port 8080 --host 0.0.0.0
+
+# Terminal 2: Frontend
+npm run dev -- --host    # Exposes on LAN
+```
+
+The Vite dev server proxies all `/api` and `/ws` traffic to the backend. Access at `http://<your-ip>:5173`.
+
+### Option B: Production build
+
+```bash
+# Build the frontend
+npm run build
+
+# Serve the static files + API from one process
+# (add StaticFiles mount to server.py, or use nginx)
+pip install aiofiles
+```
+
+Add to `server.py`:
+
+```python
+from fastapi.staticfiles import StaticFiles
+app.mount("/", StaticFiles(directory="../dist", html=True), name="static")
+```
+
+Then run:
+
+```bash
+cd backend
+uvicorn server:app --port 8080 --host 0.0.0.0
+```
+
+Everything is served from port 8080.
+
+### Option C: Docker
+
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+
+# Backend
+COPY backend/ backend/
+RUN pip install --no-cache-dir -r backend/requirements.txt
+
+# Frontend (pre-built)
+COPY dist/ dist/
+
+EXPOSE 8080
+CMD ["uvicorn", "backend.server:app", "--port", "8080", "--host", "0.0.0.0"]
+```
+
+```bash
+npm run build
+docker build -t agentplace .
+docker run -p 8080:8080 --env-file backend/.env agentplace
+```
+
+---
+
+## Key Features
+
+- **Natural-language negotiation** — Vendor and customer agents converse in plain English via ASI:One LLM.
+- **LLM-driven convergence** — ASI:One acts as a neutral referee, analyzing transcripts to decide DEAL / TERMINATE / CONTINUE.
+- **Multi-vendor consensus** — The orchestrator negotiates with all matching vendors in parallel and selects the best outcome.
+- **Real-time frontend** — WebSocket streams every negotiation event to the React UI as it happens.
+- **Dynamic agent creation** — Create new vendor agents from the frontend form; they're live and negotiating within seconds.
+- **Configurable agent personalities** — Aggression level (1–5) controls how flexible or firm each agent negotiates.
+- **Agentverse integration** — Orchestrator is registered with a mailbox and discoverable via ASI:One.
+- **Full terminal logging** — Every agent action is color-coded and timestamped in the backend terminal.
+- **Factory-pattern architecture** — Agents are created via reusable factory functions (`create_vendor_agent()`, `create_customer_agent()`, `create_orchestrator_agent()`).
+
+---
 
 ## License
 

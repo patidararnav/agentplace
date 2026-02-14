@@ -9,6 +9,7 @@ Exports:
 Run standalone:  python orchestrator.py   (reads config from .env)
 """
 
+import asyncio
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set
@@ -196,6 +197,7 @@ def create_orchestrator_agent(
     network: Optional[str] = None,
     readme_path: Optional[str] = None,
     publish_agent_details: bool = False,
+    event_queue: Optional[asyncio.Queue] = None,
 ) -> Agent:
     """Return a fully-wired orchestrator Agent.
 
@@ -226,6 +228,14 @@ def create_orchestrator_agent(
     agent = Agent(**kwargs)
     vendor_registry: Dict[str, Dict[str, Any]] = {}
     requests: Dict[str, Dict[str, Any]] = {}
+
+    def _push_event(evt: Dict[str, Any]) -> None:
+        """Push a real-time event to the WebSocket queue (non-blocking)."""
+        if event_queue is not None:
+            try:
+                event_queue.put_nowait(evt)
+            except Exception:
+                pass
 
     # ── consensus helpers (only used when consensus_mode=True) ──
 
@@ -341,6 +351,7 @@ def create_orchestrator_agent(
 
     @agent.on_event("startup")
     async def on_startup(ctx: Context) -> None:
+        print(f"[DEBUG] Orchestrator on_startup FIRED  address={agent.address}", flush=True)
         ctx.logger.info("Orchestrator ready  address=%s", agent.address)
         if not os.getenv("AGENTVERSE_KEY") and mailbox:
             ctx.logger.warning("AGENTVERSE_KEY is not set.")
@@ -350,6 +361,7 @@ def create_orchestrator_agent(
         text = extract_text(msg)
         fields = parse_fields(text)
         mt = fields.get("TYPE", "").lower()
+        print(f"[DEBUG] Orchestrator handle_chat  TYPE={mt}  sender={sender[:20]}…", flush=True)
 
         await ctx.send(sender, ChatAcknowledgement(
             timestamp=datetime.now(timezone.utc), acknowledged_msg_id=msg.msg_id))
@@ -366,6 +378,11 @@ def create_orchestrator_agent(
             ctx.logger.info("Registered vendor %s  services=%s",
                             fields.get("NAME", "Vendor"),
                             vendor_registry[va]["services"])
+            _push_event({
+                "type": "log",
+                "agent": "orchestrator",
+                "text": f"Registered vendor {fields.get('NAME', 'Vendor')}  services={vendor_registry[va]['services']}",
+            })
             return
 
         # ── new service request ──
@@ -388,6 +405,19 @@ def create_orchestrator_agent(
                 ensure_vendor_state(requests[rid], va)
             ctx.logger.info("NEW REQUEST  rid=%s  service=%s  budget=$%s  matched=%d",
                             rid, data["service"], data["budget"], len(matched))
+            _push_event({
+                "type": "log",
+                "agent": "orchestrator",
+                "text": f"NEW REQUEST  service={data['service']}  budget=${data['budget']}  matched={len(matched)} vendors",
+            })
+            _push_event({
+                "type": "step",
+                "step": "matching",
+                "status": "done",
+                "detail": f"Matched {len(matched)} vendors for {data['service']}",
+                "vendor_count": len(matched),
+                "vendor_names": [vendor_registry.get(va, {}).get("name", va) for va in matched],
+            })
             await ctx.send(sender, make_chat_message(
                 _status(rid, f"Matched {len(matched)} vendors for {data['service']}.")))
             for va in matched:
@@ -449,6 +479,11 @@ def create_orchestrator_agent(
             vs["transcript"].append(f"Vendor: {mt_text}")
             vs["transcript"] = vs["transcript"][-20:]
             ctx.logger.info("[Round %s] %s → $%s: %s", vs["rounds"], vn, price, mt_text)
+            _push_event({
+                "type": "log",
+                "agent": "orchestrator",
+                "text": f"[Round {vs['rounds']}] {vn} → ${price}: {mt_text}",
+            })
             await ctx.send(req["customer"], make_chat_message("\n".join([
                 "TYPE=vendor_message", f"RID={rid}", f"VENDOR={va}",
                 f"PRICE={price}", f"TEXT={vn}: {mt_text}",
@@ -475,6 +510,11 @@ def create_orchestrator_agent(
             vn = vendor_registry.get(va, {}).get("name", va)
             ctx.logger.info("[Round %s] Customer → %s @ $%s: %s",
                             vs["rounds"], vn, price, mt_text)
+            _push_event({
+                "type": "log",
+                "agent": "orchestrator",
+                "text": f"[Round {vs['rounds']}] Customer → {vn} @ ${price}: {mt_text}",
+            })
             await ctx.send(va, make_chat_message("\n".join([
                 "TYPE=customer_message", f"RID={rid}", f"VENDOR={va}",
                 f"PRICE={price}", f"TEXT={mt_text}",

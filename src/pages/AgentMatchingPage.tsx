@@ -1,90 +1,122 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Sparkles, Bot, CheckCircle2, Loader2, Circle,
-  MessageSquare, Search, ListOrdered,
+  MessageSquare, Search, ListOrdered, AlertCircle,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useApp } from '@/context/AppContext';
-import type { AgentStep } from '@/types';
+import type { NegotiationResults } from '@/context/AppContext';
+import { useNegotiation } from '@/hooks/useNegotiation';
+import type { StepId, StepStatus, VendorResultEvent } from '@/hooks/useNegotiation';
+import type { VendorQuote, NegotiationMessage, AgentThought } from '@/types';
 import { cn } from '@/lib/utils';
-
-/* ── 4 steps: Concierge → Matching → Negotiation → Ranking ── */
-const FOUR_STEPS: AgentStep[] = [
-  { id: 'concierge', label: '① Concierge', detail: 'Parsing your request and structuring the job spec.', status: 'pending', agentType: 'system' },
-  { id: 'matching', label: '② Matching', detail: 'Searching and ranking vendors for your job.', status: 'pending', agentType: 'system' },
-  { id: 'negotiation', label: '③ Negotiation', detail: 'Agents negotiating price and terms with vendors.', status: 'pending', agentType: 'system' },
-  { id: 'ranking', label: '④ Ranking', detail: 'Ranking offers and preparing your top results.', status: 'pending', agentType: 'system' },
-];
 
 /* Each agent gets a unique accent color */
 const SYSTEM_AGENTS = [
-  { id: 'concierge', label: 'Concierge', icon: MessageSquare, angle: -90, color: '#0070f3', glowClass: 'node-glow-blue' },
-  { id: 'matching', label: 'Matching', icon: Search, angle: 0, color: '#7928ca', glowClass: 'node-glow-purple' },
-  { id: 'negotiation', label: 'Negotiation', icon: Bot, angle: 90, color: '#ff0080', glowClass: 'node-glow-pink' },
-  { id: 'ranking', label: 'Ranking', icon: ListOrdered, angle: 180, color: '#79ffe1', glowClass: 'node-glow-cyan' },
+  { id: 'concierge' as StepId, label: 'Concierge', icon: MessageSquare, angle: -90, color: '#0070f3' },
+  { id: 'matching' as StepId, label: 'Matching', icon: Search, angle: 0, color: '#7928ca' },
+  { id: 'negotiation' as StepId, label: 'Negotiation', icon: Bot, angle: 90, color: '#ff0080' },
+  { id: 'ranking' as StepId, label: 'Ranking', icon: ListOrdered, angle: 180, color: '#79ffe1' },
 ];
 
-type AgentStatus = 'idle' | 'active' | 'done';
+/** Convert backend results to the VendorQuote[] format the results page expects */
+function buildQuotes(
+  vendorResults: VendorResultEvent[],
+  vendorNegotiations: Record<string, { messages: NegotiationMessage[]; originalPrice?: number }>,
+): VendorQuote[] {
+  const deals = vendorResults
+    .filter((v) => v.outcome === 'deal' && v.price > 0)
+    .sort((a, b) => a.price - b.price);
+
+  return deals.map((d, idx) => {
+    const neg = vendorNegotiations[d.vendor_address] || { messages: [] };
+    const origPrice = neg.originalPrice || Math.round(d.price * 1.2);
+
+    // Build agent thoughts from the negotiation messages
+    const customerThoughts: AgentThought[] = neg.messages
+      .filter((m) => m.role === 'customer-agent')
+      .map((m, i) => ({
+        timestamp: m.timestamp || `0:${String(i + 1).padStart(2, '0')}`,
+        text: m.text,
+        type: i === neg.messages.filter((x) => x.role === 'customer-agent').length - 1 ? 'result' as const : 'action' as const,
+      }));
+
+    const vendorThoughts: AgentThought[] = neg.messages
+      .filter((m) => m.role === 'vendor-agent')
+      .map((m, i) => ({
+        timestamp: m.timestamp || `0:${String(i + 1).padStart(2, '0')}`,
+        text: m.text,
+        type: i === neg.messages.filter((x) => x.role === 'vendor-agent').length - 1 ? 'result' as const : 'reasoning' as const,
+      }));
+
+    return {
+      rank: idx + 1,
+      name: d.vendor_name,
+      price: d.price,
+      originalPrice: origPrice,
+      dateTime: new Date(Date.now() + (idx + 2) * 86400000).toISOString(),
+      durationMinutes: 90,
+      vendorId: idx + 1,
+      negotiationMessages: neg.messages,
+      customerAgentThoughts: customerThoughts,
+      vendorAgentThoughts: vendorThoughts,
+      insightTags: [
+        `${d.rounds} rounds`,
+        d.price <= origPrice * 0.85 ? 'Great deal' : d.price <= origPrice * 0.95 ? 'Good savings' : 'Fair price',
+      ],
+    };
+  });
+}
 
 export function AgentMatchingPage() {
   const navigate = useNavigate();
-  const { lastPrompt } = useApp();
-  const [steps, setSteps] = useState<AgentStep[]>(
-    FOUR_STEPS.map((s) => ({ ...s, status: 'pending' }))
-  );
-  const [currentStep, setCurrentStep] = useState(-1);
-  const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>(
-    Object.fromEntries(SYSTEM_AGENTS.map((a) => [a.id, 'idle']))
-  );
+  const { lastPrompt, negotiateParams, setNegotiationResults } = useApp();
+  const negotiation = useNegotiation(negotiateParams);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const hasNavigated = useRef(false);
 
-  useEffect(() => {
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    let stepIdx = 0;
-
-    const advanceStep = () => {
-      if (stepIdx >= FOUR_STEPS.length) {
-        setAgentStatuses((prev) => {
-          const next = { ...prev };
-          for (const key of Object.keys(next)) next[key] = 'done';
-          return next;
-        });
-        timers.push(setTimeout(() => navigate('/customer/results'), 1500));
-        return;
-      }
-
-      const step = FOUR_STEPS[stepIdx];
-      const agentId = step.id;
-
-      setSteps((prev) =>
-        prev.map((s, i) =>
-          i === stepIdx ? { ...s, status: 'active' } : i < stepIdx ? { ...s, status: 'done' } : s
-        )
-      );
-      setCurrentStep(stepIdx);
-      setAgentStatuses((prev) => {
-        const next = { ...prev };
-        for (const key of Object.keys(next)) {
-          if (next[key] === 'active' && key !== agentId) next[key] = 'done';
-        }
-        next[agentId] = 'active';
-        return next;
-      });
-
-      stepIdx++;
-      const delay = step.id === 'negotiation' ? 1500 : 1000;
-      timers.push(setTimeout(advanceStep, delay));
-    };
-
-    timers.push(setTimeout(advanceStep, 500));
-    return () => timers.forEach(clearTimeout);
-  }, [navigate]);
-
+  // Auto-scroll log
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [currentStep]);
+  }, [negotiation.logs.length]);
+
+  // Navigate to results when done
+  useEffect(() => {
+    if (negotiation.isComplete && negotiation.outcome && !hasNavigated.current) {
+      hasNavigated.current = true;
+
+      const quotes = buildQuotes(negotiation.vendorResults, negotiation.vendors);
+      const totalVendors = Object.keys(negotiation.vendors).length;
+      const deals = quotes.length;
+      const avgSavings = deals > 0
+        ? Math.round(quotes.reduce((acc, q) => acc + ((q.originalPrice - q.price) / q.originalPrice) * 100, 0) / deals)
+        : 0;
+
+      const results: NegotiationResults = {
+        quotes,
+        stats: {
+          vendorsSearched: totalVendors,
+          vendorsNegotiated: totalVendors,
+          avgSavings,
+        },
+        outcome: negotiation.outcome.outcome,
+        winner: negotiation.outcome.winner,
+        winnerPrice: negotiation.outcome.winner_price,
+      };
+
+      setNegotiationResults(results);
+
+      // Small delay so user sees the "Done" state
+      setTimeout(() => navigate('/customer/results'), 1500);
+    }
+  }, [negotiation.isComplete, negotiation.outcome, negotiation.vendorResults, negotiation.vendors, navigate, setNegotiationResults]);
+
+  const steps = SYSTEM_AGENTS.map((a) => ({
+    ...a,
+    status: negotiation.stepStatuses[a.id],
+  }));
 
   const doneCount = steps.filter((s) => s.status === 'done').length;
   const progress = Math.round((doneCount / steps.length) * 100);
@@ -108,7 +140,12 @@ export function AgentMatchingPage() {
             </div>
           </div>
           <Badge variant="secondary" className="gap-1.5 px-3 py-1 font-mono text-xs">
-            {progress < 100 ? (
+            {negotiation.error ? (
+              <>
+                <AlertCircle className="size-3 text-destructive" />
+                Error
+              </>
+            ) : progress < 100 ? (
               <>
                 <Loader2 className="size-3 animate-spin" />
                 {progress}%
@@ -128,6 +165,15 @@ export function AgentMatchingPage() {
           />
         </div>
       </header>
+
+      {/* Error banner */}
+      {negotiation.error && (
+        <div className="mx-6 mt-4 p-4 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+          <p className="font-medium">Connection Error</p>
+          <p className="text-xs mt-1 opacity-80">{negotiation.error}</p>
+          <p className="text-xs mt-1 opacity-60">Make sure the backend is running: cd backend && uvicorn server:app --port 8000</p>
+        </div>
+      )}
 
       {/* Main: ring visualization + log */}
       <main className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
@@ -158,8 +204,8 @@ export function AgentMatchingPage() {
             />
 
             {/* 4 agent nodes */}
-            {SYSTEM_AGENTS.map((agent) => {
-              const status = agentStatuses[agent.id];
+            {steps.map((agent) => {
+              const status = agent.status;
               const rad = (agent.angle * Math.PI) / 180;
               const radius = 140;
               const x = Math.cos(rad) * radius;
@@ -185,7 +231,7 @@ export function AgentMatchingPage() {
                       stroke={isDone ? 'var(--success)' : isActive ? agent.color : '#404040'}
                       strokeWidth={isActive ? 2 : 1}
                       strokeDasharray={isDone ? 'none' : '4 6'}
-                      opacity={status === 'idle' ? 0.3 : 0.7}
+                      opacity={status === 'pending' ? 0.3 : 0.7}
                     />
                   </svg>
 
@@ -193,7 +239,7 @@ export function AgentMatchingPage() {
                   <div
                     className={cn(
                       'absolute z-10 flex flex-col items-center gap-1.5 transition-all duration-500',
-                      status === 'idle' ? 'opacity-40' : 'opacity-100'
+                      status === 'pending' ? 'opacity-40' : 'opacity-100'
                     )}
                     style={{
                       top: `calc(50% + ${y}px - 22px)`,
@@ -238,7 +284,10 @@ export function AgentMatchingPage() {
         {/* Right: Activity log */}
         <div className="lg:w-[420px] border-t lg:border-t-0 lg:border-l border-border/40 flex flex-col bg-card/30">
           <div className="px-4 py-3 border-b border-border/40 flex items-center gap-2">
-            <div className="size-2 rounded-full bg-[var(--success)] animate-pulse" />
+            <div className={cn(
+              "size-2 rounded-full",
+              negotiation.isComplete ? "bg-[var(--success)]" : "bg-[var(--success)] animate-pulse"
+            )} />
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               Agent Activity Log
             </span>
@@ -249,40 +298,58 @@ export function AgentMatchingPage() {
 
           <ScrollArea className="flex-1">
             <div className="p-4 space-y-2.5 font-mono text-sm">
-              {steps.map((step) => {
-                if (step.status === 'pending') return null;
-                const isActive = step.status === 'active';
-                const isDone = step.status === 'done';
-                const agent = SYSTEM_AGENTS.find((a) => a.id === step.id);
+              {negotiation.isConnecting && (
+                <div className="flex gap-3 opacity-60">
+                  <Loader2 className="size-4 animate-spin text-primary flex-shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-muted-foreground">Connecting to backend...</p>
+                  </div>
+                </div>
+              )}
+              {negotiation.logs.map((entry) => {
+                const isNeg = entry.eventType === 'negotiation';
+                const isDone = entry.eventType === 'done';
+                const isResult = entry.eventType === 'result';
 
                 return (
                   <div
-                    key={step.id}
+                    key={entry.id}
                     className={cn(
                       'flex gap-3 transition-opacity duration-300',
-                      isActive ? 'opacity-100' : 'opacity-60'
+                      isDone ? 'opacity-100' : 'opacity-80'
                     )}
                   >
                     <div className="flex-shrink-0 mt-0.5">
-                      {isActive ? (
-                        <Loader2 className="size-4 animate-spin" style={{ color: agent?.color ?? '#0070f3' }} />
-                      ) : isDone ? (
+                      {isDone ? (
                         <CheckCircle2 className="size-4 text-[var(--success)]" />
+                      ) : isResult ? (
+                        <CheckCircle2 className="size-4 text-primary" />
+                      ) : isNeg ? (
+                        <MessageSquare className="size-4 text-pink-400" />
                       ) : (
                         <Circle className="size-4 text-muted-foreground" />
                       )}
                     </div>
                     <div className="min-w-0">
-                      <p
-                        className={cn(
-                          'text-xs font-medium leading-tight',
-                          isActive ? 'text-foreground' : 'text-muted-foreground'
-                        )}
-                      >
-                        {step.label}
-                      </p>
-                      <p className="text-[11px] text-muted-foreground/60 mt-0.5 leading-relaxed">
-                        {step.detail}
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-muted-foreground/50">{entry.timestamp}</span>
+                        <span className={cn(
+                          "text-[10px] font-semibold",
+                          entry.agent === 'orchestrator' ? 'text-blue-400' :
+                          entry.agent === 'Customer' ? 'text-yellow-400' :
+                          entry.agent === 'system' ? 'text-muted-foreground' :
+                          'text-green-400'
+                        )}>
+                          {entry.agent}
+                        </span>
+                      </div>
+                      <p className={cn(
+                        'text-[11px] leading-relaxed mt-0.5',
+                        isDone ? 'text-[var(--success)] font-medium' :
+                        isResult ? 'text-primary' :
+                        'text-muted-foreground/60'
+                      )}>
+                        {entry.text}
                       </p>
                     </div>
                   </div>

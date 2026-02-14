@@ -100,6 +100,9 @@ def create_vendor_agent(
     kwargs: Dict[str, Any] = {"name": name.lower().replace(" ", "-"), "seed": seed}
     if port is not None:
         kwargs["port"] = port
+        # Provide an explicit endpoint so the agent registers on the Almanac
+        # and is reachable by other agents (needed when mailbox=False).
+        kwargs["endpoint"] = [f"http://127.0.0.1:{port}/submit"]
     if mailbox:
         kwargs["mailbox"] = True
     if network:
@@ -168,14 +171,18 @@ def create_vendor_agent(
 
     @agent.on_event("startup")
     async def on_startup(ctx: Context) -> None:
+        print(f"[DEBUG] {name} on_startup FIRED", flush=True)
         ctx.logger.info("Vendor ready: %s  address=%s", name, agent.address)
         if not os.getenv("AGENTVERSE_KEY") and mailbox:
             ctx.logger.warning("AGENTVERSE_KEY is not set.")
-        await ctx.send(orchestrator_address, make_chat_message(_registration_text()))
+        print(f"[DEBUG] {name} sending vendor_register to orchestrator...", flush=True)
+        result = await ctx.send(orchestrator_address, make_chat_message(_registration_text()))
+        print(f"[DEBUG] {name} ctx.send() returned: {result}", flush=True)
 
     @agent.on_interval(period=45.0)
     async def refresh_registration(ctx: Context) -> None:
-        await ctx.send(orchestrator_address, make_chat_message(_registration_text()))
+        result = await ctx.send(orchestrator_address, make_chat_message(_registration_text()))
+        print(f"[DEBUG] {name} refresh_registration ctx.send() returned: {result}", flush=True)
 
     @chat_proto.on_message(model=ChatMessage)
     async def handle_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:

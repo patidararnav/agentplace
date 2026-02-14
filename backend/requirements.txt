@@ -2,3 +2,6 @@ uagents
 uagents-core
 python-dotenv
 openai
+fastapi
+uvicorn[standard]
+websockets

@@ -98,12 +98,38 @@ export function NewVendorPage() {
 
     setSubmitting(true);
     const created = await insertVendor(payload);
-    setSubmitting(false);
     if (!created) {
+      setSubmitting(false);
       setError("Failed to create vendor. Check Supabase table and RLS.");
       return;
     }
 
+    // Also register a vendor agent on the backend
+    try {
+      const agentRes = await fetch("/api/vendors", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: trimName,
+          services: jobTypesPayload.map((jt) => jt.type.toLowerCase()),
+          base_prices: Object.fromEntries(
+            jobTypesPayload.map((jt) => [jt.type.toLowerCase(), jt.price])
+          ),
+          aggression: Number(negotiationAggression) || 1,
+        }),
+      });
+      if (agentRes.ok) {
+        const agentData = await agentRes.json();
+        console.log("[NewVendorPage] Vendor agent registered:", agentData);
+      } else {
+        console.warn("[NewVendorPage] Backend agent registration failed (non-critical):", agentRes.status);
+      }
+    } catch (err) {
+      // Agent registration is non-critical — vendor still saved in Supabase
+      console.warn("[NewVendorPage] Backend agent registration error:", err);
+    }
+
+    setSubmitting(false);
     await refetchVendors();
     setSelectedVendor(created);
     navigate("/vendor");
