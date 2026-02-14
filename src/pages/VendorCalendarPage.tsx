@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ChevronLeft,
@@ -12,8 +12,22 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { mockPlannedJobs } from "@/data/mock";
-import type { PlannedJob } from "@/types";
+import { useApp } from "@/context/AppContext";
+import { fetchJobsForVendor } from "@/lib/supabase-data";
+import type { PlannedJob, JobStatus } from "@/types";
+import type { JobData } from "@/types";
+
+const JOB_STATUS_LABELS: Record<JobStatus, string> = {
+  1: "Concierge",
+  2: "Matching",
+  3: "Negotiating",
+  4: "Ranking",
+  5: "Booked",
+  6: "In progress",
+  7: "Completed",
+  8: "Payment sent",
+  9: "Payment received",
+};
 
 function getDaysInMonth(year: number, month: number) {
   return new Date(year, month + 1, 0).getDate();
@@ -47,27 +61,68 @@ function formatTime(iso: string) {
   });
 }
 
+function jobDataToPlannedJob(job: JobData, vendorName: string): PlannedJob {
+  const dateTime = job.date && job.start_time
+    ? `${job.date}T${job.start_time}`
+    : `${job.date}T09:00`;
+  return {
+    id: String(job.job_id),
+    vendorName,
+    jobType: job.type,
+    price: job.price,
+    dateTime,
+    durationMinutes: job.duration_minutes,
+    vendorId: job.vendor_id,
+    status: job.status,
+  };
+}
+
 export function VendorCalendarPage() {
   const navigate = useNavigate();
+  const { selectedVendor } = useApp();
+  const [calendarJobs, setCalendarJobs] = useState<JobData[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(false);
 
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
   const [selectedJob, setSelectedJob] = useState<PlannedJob | null>(null);
+  const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedVendor) {
+      setCalendarJobs([]);
+      return;
+    }
+    setJobsLoading(true);
+    const jobIds = (selectedVendor.job_ids ?? []).map((id) => Number(id));
+    fetchJobsForVendor(selectedVendor.vendor_id, jobIds.length > 0 ? jobIds : undefined)
+      .then(setCalendarJobs)
+      .finally(() => setJobsLoading(false));
+  }, [selectedVendor]);
+
+  const vendorJobs = useMemo(() => {
+    if (!selectedVendor) return [];
+    return calendarJobs.map((j) => jobDataToPlannedJob(j, selectedVendor.name));
+  }, [calendarJobs, selectedVendor]);
 
   const daysInMonth = getDaysInMonth(year, month);
   const firstDay = getFirstDayOfWeek(year, month);
 
-  // Map date string (YYYY-MM-DD) -> jobs
   const jobsByDate = useMemo(() => {
     const map: Record<string, PlannedJob[]> = {};
-    for (const job of mockPlannedJobs) {
+    for (const job of vendorJobs) {
       const dateKey = job.dateTime.split("T")[0];
       if (!map[dateKey]) map[dateKey] = [];
       map[dateKey].push(job);
     }
     return map;
-  }, []);
+  }, [vendorJobs]);
+
+  const jobsForSelectedDay = useMemo(() => {
+    if (!selectedDateKey) return [];
+    return jobsByDate[selectedDateKey] || [];
+  }, [selectedDateKey, jobsByDate]);
 
   function prevMonth() {
     if (month === 0) {
@@ -77,6 +132,7 @@ export function VendorCalendarPage() {
       setMonth((m) => m - 1);
     }
     setSelectedJob(null);
+    setSelectedDateKey(null);
   }
 
   function nextMonth() {
@@ -87,10 +143,12 @@ export function VendorCalendarPage() {
       setMonth((m) => m + 1);
     }
     setSelectedJob(null);
+    setSelectedDateKey(null);
   }
 
   function handleDayClick(day: number) {
     const dateKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    setSelectedDateKey(dateKey);
     const jobs = jobsByDate[dateKey];
     if (jobs && jobs.length > 0) {
       setSelectedJob((prev) =>
@@ -129,13 +187,26 @@ export function VendorCalendarPage() {
               <h1 className="text-lg font-semibold text-foreground leading-tight">
                 Agent Place
               </h1>
-              <p className="text-xs text-muted-foreground">My Calendar</p>
+              <p className="text-xs text-muted-foreground">
+                {selectedVendor ? `${selectedVendor.name} — Calendar` : "My Calendar"}
+              </p>
             </div>
           </div>
         </div>
       </header>
 
       <main className="max-w-4xl mx-auto px-6 py-8 space-y-6">
+        {!selectedVendor ? (
+          <div className="rounded-xl border border-border bg-muted/30 p-12 text-center">
+            <p className="text-muted-foreground font-medium">
+              Choose a vendor on the dashboard to view their calendar.
+            </p>
+            <Button variant="outline" className="mt-4" onClick={() => navigate("/vendor")}>
+              Back to dashboard
+            </Button>
+          </div>
+        ) : (
+        <>
         {/* Month Navigation */}
         <div className="flex items-center justify-between">
           <Button variant="ghost" size="icon" onClick={prevMonth}>
@@ -174,9 +245,7 @@ export function VendorCalendarPage() {
                 const dateKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
                 const dayJobs = jobsByDate[dateKey] || [];
                 const isToday = dateKey === todayKey;
-                const isSelected = selectedJob
-                  ? selectedJob.dateTime.startsWith(dateKey)
-                  : false;
+                const isSelected = selectedDateKey === dateKey;
 
                 return (
                   <button
@@ -219,7 +288,7 @@ export function VendorCalendarPage() {
           </CardContent>
         </Card>
 
-        {/* Job Detail (inline expand) */}
+        {/* Job detail (on top) — selected job description */}
         {selectedJob && (
           <Card className="animate-in slide-in-from-top-2 duration-200">
             <CardContent className="pt-6 space-y-4">
@@ -234,6 +303,12 @@ export function VendorCalendarPage() {
                 </div>
                 <Badge>{selectedJob.jobType.split(" ")[0]}</Badge>
               </div>
+
+              {selectedJob.status != null && (
+                <p className="text-sm font-medium text-foreground">
+                  Status: {JOB_STATUS_LABELS[selectedJob.status as JobStatus] ?? `Status ${selectedJob.status}`}
+                </p>
+              )}
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -261,17 +336,32 @@ export function VendorCalendarPage() {
           </Card>
         )}
 
-        {/* Upcoming jobs list */}
+        {/* Jobs for the selected day */}
         <section className="space-y-3">
           <h3 className="text-lg font-semibold text-foreground">
-            Upcoming Jobs
+            {selectedDateKey
+              ? `Jobs for ${new Date(selectedDateKey + "T12:00:00").toLocaleDateString("en-US", {
+                  weekday: "short",
+                  month: "short",
+                  day: "numeric",
+                  year: "numeric",
+                })}`
+              : "Jobs for selected day"}
           </h3>
-          {mockPlannedJobs.length === 0 && (
+          {!selectedDateKey && (
             <p className="text-sm text-muted-foreground">
-              No upcoming jobs scheduled.
+              Click a day on the calendar to see jobs.
             </p>
           )}
-          {mockPlannedJobs.map((job) => (
+          {selectedDateKey && jobsLoading && (
+            <p className="text-sm text-muted-foreground">Loading jobs…</p>
+          )}
+          {selectedDateKey && !jobsLoading && jobsForSelectedDay.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              No jobs scheduled for this day.
+            </p>
+          )}
+          {selectedDateKey && !jobsLoading && jobsForSelectedDay.map((job) => (
             <Card
               key={job.id}
               className={cn(
@@ -290,11 +380,6 @@ export function VendorCalendarPage() {
                     {job.jobType}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {new Date(job.dateTime).toLocaleDateString("en-US", {
-                      weekday: "short",
-                      month: "short",
-                      day: "numeric",
-                    })}{" "}
                     at {formatTime(job.dateTime)}
                   </p>
                 </div>
@@ -310,6 +395,8 @@ export function VendorCalendarPage() {
             </Card>
           ))}
         </section>
+        </>
+        )}
       </main>
     </div>
   );

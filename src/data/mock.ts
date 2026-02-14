@@ -327,6 +327,7 @@ export const mockPlannedJobs: PlannedJob[] = [
     dateTime: '2026-02-18T09:00:00',
     durationMinutes: 90,
     vendorId: 1,
+    status: 6,
   },
   {
     id: '2',
@@ -336,6 +337,7 @@ export const mockPlannedJobs: PlannedJob[] = [
     dateTime: '2026-02-25T14:00:00',
     durationMinutes: 60,
     vendorId: 2,
+    status: 5,
   },
   {
     id: '3',
@@ -345,6 +347,7 @@ export const mockPlannedJobs: PlannedJob[] = [
     dateTime: '2026-03-02T10:00:00',
     durationMinutes: 45,
     vendorId: 3,
+    status: 7,
   },
 ];
 

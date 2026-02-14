@@ -142,12 +142,12 @@ export function MapViewPage() {
           <CircleMarker
             center={center}
             radius={14}
-            pathOptions={{ color: '#4F46E5', fillColor: '#4F46E5', fillOpacity: 0.15, weight: 2 }}
+            pathOptions={{ color: '#fafafa', fillColor: '#fafafa', fillOpacity: 0.15, weight: 2 }}
           />
           <CircleMarker
             center={center}
             radius={6}
-            pathOptions={{ color: '#4F46E5', fillColor: '#4F46E5', fillOpacity: 1, weight: 0 }}
+            pathOptions={{ color: '#fafafa', fillColor: '#fafafa', fillOpacity: 1, weight: 0 }}
           />
           {vendors.map((vendor) => {
             const loc = vendor.home_location;
@@ -162,15 +162,15 @@ export function MapViewPage() {
                 {isActive && (
                   <Polyline
                     positions={arcPoints}
-                    pathOptions={{ color: '#14B8A6', weight: 2, opacity: 0.7, dashArray: '6,8' }}
+                    pathOptions={{ color: '#a3a3a3', weight: 2, opacity: 0.7, dashArray: '6,8' }}
                   />
                 )}
                 <CircleMarker
                   center={[loc.lat, loc.lng]}
                   radius={8}
                   pathOptions={{
-                    color: isActive ? '#14B8A6' : '#475569',
-                    fillColor: isActive ? '#14B8A6' : '#475569',
+                    color: isActive ? '#fafafa' : '#525252',
+                    fillColor: isActive ? '#fafafa' : '#525252',
                     fillOpacity: isActive ? 0.9 : 0.4,
                     weight: 0,
                   }}

@@ -5,9 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { supabase } from "@/lib/supabase";
+import { insertVendor } from "@/lib/supabase-data";
 import { useApp } from "@/context/AppContext";
-import type { VendorData } from "@/types";
 
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 
@@ -19,7 +18,7 @@ type JobTypeRow = { type: string; price: string; duration_minutes: string };
 
 export function NewVendorPage() {
   const navigate = useNavigate();
-  const { setSelectedVendor, refetchVendors } = useApp();
+  const { setSelectedVendor, refetchVendors, vendors } = useApp();
 
   const [name, setName] = useState("");
   const [maxDistanceMiles, setMaxDistanceMiles] = useState("25");
@@ -79,7 +78,11 @@ export function NewVendorPage() {
       return;
     }
 
+    const nextId = vendors.length > 0
+      ? Math.max(...vendors.map((v) => v.vendor_id)) + 1
+      : 1;
     const payload = {
+      vendor_id: nextId,
       name: trimName,
       max_distance_miles: Number(maxDistanceMiles) || 25,
       home_location: { lat: Number(lat) || 0, lng: Number(lng) || 0 },
@@ -87,27 +90,22 @@ export function NewVendorPage() {
       negotiation_aggression: Number(negotiationAggression) || 1,
       weekly_availability: weekly,
       job_types: jobTypesPayload,
+      job_ids: [],
+      reviews: [],
+      average_rating: 0,
+      total_ratings: 0,
     };
 
     setSubmitting(true);
-    const tables = ["vendor_data", "VendorData"];
-    let data: unknown = null;
-    for (const table of tables) {
-      const result = await supabase.from(table).insert(payload).select().single();
-      if (!result.error) {
-        data = result.data;
-        break;
-      }
-    }
-
+    const created = await insertVendor(payload);
     setSubmitting(false);
-    if (!data) {
-      setError("Failed to create vendor. Check Supabase table name and RLS.");
+    if (!created) {
+      setError("Failed to create vendor. Check Supabase table and RLS.");
       return;
     }
 
     await refetchVendors();
-    setSelectedVendor(data as VendorData);
+    setSelectedVendor(created);
     navigate("/vendor");
   }
 
@@ -115,7 +113,7 @@ export function NewVendorPage() {
     <div className="min-h-screen bg-background">
       <header className="border-b border-border">
         <div className="max-w-2xl mx-auto px-6 py-4 flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate("/")} aria-label="Back">
+          <Button variant="ghost" size="icon" onClick={() => navigate("/vendor")} aria-label="Back">
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <h1 className="text-lg font-semibold text-foreground">New vendor</h1>
@@ -274,7 +272,7 @@ export function NewVendorPage() {
           </Card>
 
           <div className="flex gap-3">
-            <Button type="button" variant="outline" onClick={() => navigate("/")}>
+            <Button type="button" variant="outline" onClick={() => navigate("/vendor")}>
               Cancel
             </Button>
             <Button type="submit" disabled={submitting}>

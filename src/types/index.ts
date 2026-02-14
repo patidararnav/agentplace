@@ -1,5 +1,5 @@
-/* ── Job status: 1=Concierge, 2=Matching, 3=Negotiating, 4=Ranking ── */
-export type JobStatus = 1 | 2 | 3 | 4;
+/* ── Job status: 1=Concierge, 2=Matching, 3=Negotiating, 4=Ranking, 5=Booked, 6+=In progress/Completed/Payment ── */
+export type JobStatus = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 /* ── Jobs DB: one row per job; vendor and consumer reference by id/name ── */
 export interface JobData {
@@ -73,6 +73,8 @@ export interface VendorQuote {
   dateTime: string;
   durationMinutes: number;
   vendorId: number;
+  /** When present, accept will update this job's status to Booked in the DB */
+  job_id?: number;
   negotiationMessages: NegotiationMessage[];
   customerAgentThoughts: AgentThought[];
   vendorAgentThoughts: AgentThought[];
@@ -87,6 +89,7 @@ export interface PlannedJob {
   dateTime: string;
   durationMinutes: number;
   vendorId: number;
+  status?: JobStatus;
 }
 
 /* ── Stats ── */

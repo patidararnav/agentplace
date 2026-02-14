@@ -28,7 +28,7 @@ export function FulfillmentPage() {
 
   const handleSubmitReview = () => {
     setReviewSubmitted(true);
-    setTimeout(() => navigate('/customer'), 2000);
+    setTimeout(() => navigate('/'), 2000);
   };
 
   return (
@@ -109,14 +109,14 @@ export function FulfillmentPage() {
                       className={cn(
                         'size-7 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-all duration-500',
                         isDone
-                          ? 'border-emerald-500 bg-emerald-500/20'
+                          ? 'border-primary bg-primary/20'
                           : isActive
                           ? 'border-primary bg-primary/15'
                           : 'border-border bg-card'
                       )}
                     >
                       {isDone ? (
-                        <CheckCircle2 className="size-4 text-emerald-400" />
+                        <CheckCircle2 className="size-4 text-primary" />
                       ) : isActive ? (
                         <Loader2 className="size-3.5 text-primary animate-spin" />
                       ) : (
@@ -127,7 +127,7 @@ export function FulfillmentPage() {
                       <div
                         className={cn(
                           'w-px flex-1 min-h-[24px]',
-                          isDone ? 'bg-emerald-500/40' : 'bg-border/40'
+                          isDone ? 'bg-primary/30' : 'bg-border/40'
                         )}
                       />
                     )}
@@ -172,7 +172,7 @@ export function FulfillmentPage() {
                       </div>
                     )}
                     {step.id === 'payment' && paymentReleased && (
-                      <div className="mt-2 flex items-center gap-2 text-xs text-emerald-400">
+                      <div className="mt-2 flex items-center gap-2 text-xs text-primary">
                         <CreditCard className="size-3.5" />
                         $285 released to QuickFix Plumbing
                       </div>
@@ -218,7 +218,7 @@ export function FulfillmentPage() {
                         className={cn(
                           'size-7',
                           n <= rating
-                            ? 'text-amber-400 fill-amber-400'
+                            ? 'text-primary fill-primary'
                             : 'text-muted-foreground/30'
                         )}
                       />
@@ -247,9 +247,9 @@ export function FulfillmentPage() {
 
           {/* Review submitted */}
           {reviewSubmitted && (
-            <Card className="border-emerald-500/30">
+            <Card className="border-primary/30">
               <CardContent className="p-5 text-center space-y-2">
-                <CheckCircle2 className="size-10 text-emerald-400 mx-auto" />
+                <CheckCircle2 className="size-10 text-primary mx-auto" />
                 <h3 className="font-semibold text-foreground">Review submitted!</h3>
                 <p className="text-sm text-muted-foreground">
                   Reputation Agent updated vendor score. Redirecting...

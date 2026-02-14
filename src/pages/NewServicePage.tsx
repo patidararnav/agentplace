@@ -3,61 +3,17 @@ import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Sparkles, Bot, Check } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Slider } from "@/components/ui/slider";
-import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { cn } from "@/lib/utils";
-
-const JOB_TYPES = [
-  "Plumbing",
-  "Electrical",
-  "Cleaning",
-  "Painting",
-  "HVAC",
-  "Landscaping",
-  "Carpentry",
-  "Roofing",
-  "Moving",
-  "General Repair",
-];
-
-const DAYS = [
-  { key: "monday", label: "Mon", hours: "9:00 AM - 5:00 PM" },
-  { key: "tuesday", label: "Tue", hours: "9:00 AM - 5:00 PM" },
-  { key: "wednesday", label: "Wed", hours: "9:00 AM - 5:00 PM" },
-  { key: "thursday", label: "Thu", hours: "9:00 AM - 5:00 PM" },
-  { key: "friday", label: "Fri", hours: "9:00 AM - 5:00 PM" },
-  { key: "saturday", label: "Sat", hours: "10:00 AM - 2:00 PM" },
-];
 
 export function NewServicePage() {
   const navigate = useNavigate();
 
   const [serviceName, setServiceName] = useState("");
-  const [selectedJobTypes, setSelectedJobTypes] = useState<string[]>([]);
+  const [jobType, setJobType] = useState("");
   const [hourlyRate, setHourlyRate] = useState("");
-  const [maxDistance, setMaxDistance] = useState([25]);
-  const [experienceYears, setExperienceYears] = useState("");
-  const [flexibility, setFlexibility] = useState([5]);
-  const [availability, setAvailability] = useState<Record<string, boolean>>(
-    () =>
-      Object.fromEntries(
-        DAYS.map((d) => [d.key, d.key !== "saturday"])
-      )
-  );
+  const [durationMinutes, setDurationMinutes] = useState("");
   const [submitted, setSubmitted] = useState(false);
-
-  function toggleJobType(type: string) {
-    setSelectedJobTypes((prev) =>
-      prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type]
-    );
-  }
-
-  function toggleDay(key: string) {
-    setAvailability((prev) => ({ ...prev, [key]: !prev[key] }));
-  }
 
   function handleSubmit() {
     setSubmitted(true);
@@ -127,29 +83,15 @@ export function NewServicePage() {
           />
         </div>
 
-        {/* Job Types */}
-        <div className="space-y-3">
-          <Label>Job Types</Label>
-          <div className="flex flex-wrap gap-2">
-            {JOB_TYPES.map((type) => {
-              const selected = selectedJobTypes.includes(type);
-              return (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => toggleJobType(type)}
-                  className={cn(
-                    "px-3 py-1.5 rounded-full text-sm font-medium border transition-colors",
-                    selected
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-secondary/50 text-muted-foreground border-border hover:border-primary/50 hover:text-foreground"
-                  )}
-                >
-                  {type}
-                </button>
-              );
-            })}
-          </div>
+        {/* Job Type */}
+        <div className="space-y-2">
+          <Label htmlFor="job-type">Job Type</Label>
+          <Input
+            id="job-type"
+            placeholder="e.g. Plumbing, Electrical, Cleaning"
+            value={jobType}
+            onChange={(e) => setJobType(e.target.value)}
+          />
         </div>
 
         <Separator />
@@ -172,158 +114,23 @@ export function NewServicePage() {
           </div>
         </div>
 
-        {/* Max Distance */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <Label>Max Distance Willing to Travel</Label>
-            <span className="text-sm font-medium text-foreground">
-              {maxDistance[0]} miles
-            </span>
-          </div>
-          <Slider
-            value={maxDistance}
-            onValueChange={setMaxDistance}
-            min={5}
-            max={50}
-            step={1}
-          />
-          <div className="flex justify-between text-xs text-muted-foreground">
-            <span>5 mi</span>
-            <span>50 mi</span>
-          </div>
-        </div>
-
-        {/* Experience Years */}
+        {/* Duration */}
         <div className="space-y-2">
-          <Label htmlFor="experience">Experience (years)</Label>
+          <Label htmlFor="duration">Duration (minutes)</Label>
           <Input
-            id="experience"
+            id="duration"
             type="number"
-            placeholder="0"
-            value={experienceYears}
-            onChange={(e) => setExperienceYears(e.target.value)}
-          />
-        </div>
-
-        <Separator />
-
-        {/* Negotiation Flexibility */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <Label>Negotiation Flexibility</Label>
-            <span className="text-sm font-medium text-foreground">
-              {flexibility[0]}/10
-            </span>
-          </div>
-          <Slider
-            value={flexibility}
-            onValueChange={setFlexibility}
+            placeholder="e.g. 60"
             min={1}
-            max={10}
-            step={1}
+            value={durationMinutes}
+            onChange={(e) => setDurationMinutes(e.target.value)}
           />
-          <div className="flex justify-between text-xs text-muted-foreground">
-            <span>Firm on price</span>
-            <span>Very flexible</span>
-          </div>
-        </div>
-
-        <Separator />
-
-        {/* Agent Automation Rules */}
-        <div className="space-y-4">
-          <div>
-            <Label className="text-base">Agent Permissions</Label>
-            <p className="text-sm text-muted-foreground mt-1">
-              Control what your agent can do automatically during negotiations.
-            </p>
-          </div>
-
-          <Card>
-            <CardContent className="pt-4 space-y-1">
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <p className="text-sm font-medium text-foreground">Auto-quote</p>
-                  <p className="text-xs text-muted-foreground">Automatically send quotes based on your rate</p>
-                </div>
-                <Switch defaultChecked />
-              </div>
-              <Separator />
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <p className="text-sm font-medium text-foreground">Auto-accept bookings</p>
-                  <p className="text-xs text-muted-foreground">Accept jobs within distance &amp; notice constraints</p>
-                </div>
-                <Switch />
-              </div>
-              <Separator />
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <p className="text-sm font-medium text-foreground">Allow bundle discounts</p>
-                  <p className="text-xs text-muted-foreground">Agent can offer 10% off for multi-service bookings</p>
-                </div>
-                <Switch defaultChecked />
-              </div>
-              <Separator />
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <p className="text-sm font-medium text-foreground">Auto-upsell add-ons</p>
-                  <p className="text-xs text-muted-foreground">Suggest related services during negotiation</p>
-                </div>
-                <Switch defaultChecked />
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <Separator />
-
-        {/* Weekly Availability */}
-        <div className="space-y-4">
-          <Label>Weekly Availability</Label>
-          <Card>
-            <CardContent className="pt-4 space-y-1">
-              {DAYS.map((day, idx) => (
-                <div key={day.key}>
-                  <div className="flex items-center justify-between py-3">
-                    <div className="flex items-center gap-3">
-                      <Switch
-                        checked={availability[day.key]}
-                        onCheckedChange={() => toggleDay(day.key)}
-                      />
-                      <span
-                        className={cn(
-                          "font-medium text-sm w-8",
-                          availability[day.key]
-                            ? "text-foreground"
-                            : "text-muted-foreground"
-                        )}
-                      >
-                        {day.label}
-                      </span>
-                    </div>
-                    <span
-                      className={cn(
-                        "text-sm",
-                        availability[day.key]
-                          ? "text-muted-foreground"
-                          : "text-muted-foreground/40"
-                      )}
-                    >
-                      {day.hours}
-                    </span>
-                  </div>
-                  {idx < DAYS.length - 1 && <Separator />}
-                </div>
-              ))}
-            </CardContent>
-          </Card>
         </div>
 
         {/* Submit */}
         <Button className="w-full h-12 text-base" onClick={handleSubmit}>
           <Bot className="h-5 w-5 mr-2" />
-          Create service &amp; activate agent
+          Create service
         </Button>
       </main>
     </div>

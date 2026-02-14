@@ -50,85 +50,84 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
-/* Agent Place brand palette */
+/* Agent Place — black & white with gradients */
 :root {
   --radius: 0.625rem;
-  /* Deep Base (Midnight Slate) */
-  --brand-base: #0F172A;
-  /* Primary (Indigo-Blue) */
-  --brand-primary: #4F46E5;
-  /* Secondary (Electric Teal) */
-  --brand-teal: #14B8A6;
-  /* Success (Soft Emerald) */
-  --brand-emerald: #10B981;
-  /* Highlight (Muted Amber) */
-  --brand-amber: #F59E0B;
+  --brand-base: #0a0a0a;
+  --brand-primary: #fafafa;
+  --brand-teal: #a3a3a3;
+  --brand-emerald: #d4d4d4;
+  --brand-amber: #e5e5e5;
 
-  --background: var(--brand-base);
-  --foreground: oklch(0.97 0 0);
-  --card: #1e293b;
-  --card-foreground: oklch(0.97 0 0);
-  --popover: #1e293b;
-  --popover-foreground: oklch(0.97 0 0);
-  --primary: var(--brand-primary);
-  --primary-foreground: oklch(0.99 0 0);
-  --secondary: var(--brand-teal);
-  --secondary-foreground: var(--brand-base);
-  --muted: #334155;
-  --muted-foreground: #94a3b8;
-  --accent: var(--brand-teal);
-  --accent-foreground: var(--brand-base);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: #334155;
-  --input: #334155;
-  --ring: var(--brand-primary);
-  --chart-1: var(--brand-primary);
-  --chart-2: var(--brand-teal);
-  --chart-3: var(--brand-emerald);
-  --chart-4: var(--brand-amber);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: #1e293b;
-  --sidebar-foreground: oklch(0.97 0 0);
-  --sidebar-primary: var(--brand-primary);
-  --sidebar-primary-foreground: oklch(0.99 0 0);
-  --sidebar-accent: var(--brand-teal);
-  --sidebar-accent-foreground: var(--brand-base);
-  --sidebar-border: #334155;
-  --sidebar-ring: var(--brand-primary);
+  --background: #0a0a0a;
+  --foreground: #fafafa;
+  --card: #141414;
+  --card-foreground: #fafafa;
+  --popover: #171717;
+  --popover-foreground: #fafafa;
+  --primary: #fafafa;
+  --primary-foreground: #0a0a0a;
+  --secondary: #262626;
+  --secondary-foreground: #fafafa;
+  --muted: #262626;
+  --muted-foreground: #a3a3a3;
+  --accent: #404040;
+  --accent-foreground: #fafafa;
+  --destructive: #737373;
+  --border: #262626;
+  --input: #262626;
+  --ring: #525252;
+  --chart-1: #fafafa;
+  --chart-2: #a3a3a3;
+  --chart-3: #737373;
+  --chart-4: #525252;
+  --chart-5: #404040;
+  --sidebar: #141414;
+  --sidebar-foreground: #fafafa;
+  --sidebar-primary: #fafafa;
+  --sidebar-primary-foreground: #0a0a0a;
+  --sidebar-accent: #262626;
+  --sidebar-accent-foreground: #fafafa;
+  --sidebar-border: #262626;
+  --sidebar-ring: #525252;
+
+  --gradient-bg: linear-gradient(180deg, #0a0a0a 0%, #0f0f0f 50%, #141414 100%);
+  --gradient-card: linear-gradient(180deg, #171717 0%, #141414 100%);
+  --gradient-subtle: linear-gradient(135deg, #1a1a1a 0%, #262626 100%);
 }
 
 .dark {
-  --background: var(--brand-base);
-  --foreground: oklch(0.97 0 0);
-  --card: #1e293b;
-  --card-foreground: oklch(0.97 0 0);
-  --popover: #1e293b;
-  --popover-foreground: oklch(0.97 0 0);
-  --primary: var(--brand-primary);
-  --primary-foreground: oklch(0.99 0 0);
-  --secondary: var(--brand-teal);
-  --secondary-foreground: var(--brand-base);
-  --muted: #334155;
-  --muted-foreground: #94a3b8;
-  --accent: var(--brand-teal);
-  --accent-foreground: var(--brand-base);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: #334155;
-  --input: #334155;
-  --ring: var(--brand-primary);
-  --chart-1: var(--brand-primary);
-  --chart-2: var(--brand-teal);
-  --chart-3: var(--brand-emerald);
-  --chart-4: var(--brand-amber);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: #1e293b;
-  --sidebar-foreground: oklch(0.97 0 0);
-  --sidebar-primary: var(--brand-primary);
-  --sidebar-primary-foreground: oklch(0.99 0 0);
-  --sidebar-accent: var(--brand-teal);
-  --sidebar-accent-foreground: var(--brand-base);
-  --sidebar-border: #334155;
-  --sidebar-ring: var(--brand-primary);
+  --background: #0a0a0a;
+  --foreground: #fafafa;
+  --card: #141414;
+  --card-foreground: #fafafa;
+  --popover: #171717;
+  --popover-foreground: #fafafa;
+  --primary: #fafafa;
+  --primary-foreground: #0a0a0a;
+  --secondary: #262626;
+  --secondary-foreground: #fafafa;
+  --muted: #262626;
+  --muted-foreground: #a3a3a3;
+  --accent: #404040;
+  --accent-foreground: #fafafa;
+  --destructive: #737373;
+  --border: #262626;
+  --input: #262626;
+  --ring: #525252;
+  --chart-1: #fafafa;
+  --chart-2: #a3a3a3;
+  --chart-3: #737373;
+  --chart-4: #525252;
+  --chart-5: #404040;
+  --sidebar: #141414;
+  --sidebar-foreground: #fafafa;
+  --sidebar-primary: #fafafa;
+  --sidebar-primary-foreground: #0a0a0a;
+  --sidebar-accent: #262626;
+  --sidebar-accent-foreground: #fafafa;
+  --sidebar-border: #262626;
+  --sidebar-ring: #525252;
 }
 
 @layer base {
@@ -136,9 +135,13 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    color: var(--foreground);
+    background: var(--gradient-bg);
+    min-height: 100vh;
   }
 }
+
+
 
 /* Leaflet map must have explicit height to render */
 .leaflet-container {

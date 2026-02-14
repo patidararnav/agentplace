@@ -12,9 +12,12 @@ import {
   Bot,
   User,
   ArrowLeft,
+  Calendar,
+  MessageSquare,
 } from 'lucide-react';
 import { mockQuotes, mockJobStats } from '@/data/mock';
 import { NegotiationChatModal } from '@/components/NegotiationChatModal';
+import { updateJobStatus } from '@/lib/supabase-data';
 import type { VendorQuote } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -41,13 +44,23 @@ function formatDate(s: string) {
   });
 }
 
+const JOB_STATUS_BOOKED = 5;
+
 export function JobResponsePage() {
   const navigate = useNavigate();
   const [selectedChat, setSelectedChat] = useState<VendorQuote | null>(null);
   const [selectedCoT, setSelectedCoT] = useState<VendorQuote | null>(null);
+  const [acceptedQuote, setAcceptedQuote] = useState<VendorQuote | null>(null);
 
   const stats = mockJobStats;
   const quotes = mockQuotes;
+
+  async function handleAccept(q: VendorQuote) {
+    if (q.job_id != null) {
+      await updateJobStatus(q.job_id, JOB_STATUS_BOOKED);
+    }
+    setAcceptedQuote(q);
+  }
 
   return (
     <div className="min-h-svh bg-background flex flex-col">
@@ -58,7 +71,7 @@ export function JobResponsePage() {
             variant="ghost"
             size="icon"
             className="size-8"
-            onClick={() => navigate('/customer')}
+            onClick={() => navigate('/')}
           >
             <ArrowLeft className="size-4" />
           </Button>
@@ -111,7 +124,7 @@ export function JobResponsePage() {
                             )}
                             <Badge
                               variant="secondary"
-                              className="text-xs gap-1 text-emerald-400"
+                              className="text-xs gap-1 text-foreground"
                             >
                               <TrendingDown className="size-3" />
                               {savings}% off
@@ -171,7 +184,7 @@ export function JobResponsePage() {
                     <Button
                       size="sm"
                       className="flex-1 gap-1.5"
-                      onClick={() => navigate('/customer/tracking')}
+                      onClick={() => handleAccept(q)}
                     >
                       <Check className="size-4" />
                       Accept
@@ -183,6 +196,48 @@ export function JobResponsePage() {
           })}
         </div>
       </main>
+
+      {/* Job booked — choose next: new prompt or calendar */}
+      {acceptedQuote && (
+        <Dialog open onOpenChange={() => setAcceptedQuote(null)}>
+          <DialogContent className="sm:max-w-md bg-card border-border">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-lg">
+                <span className="flex size-9 items-center justify-center rounded-full bg-primary/20">
+                  <Check className="size-5 text-primary" />
+                </span>
+                Job booked
+              </DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              {acceptedQuote.name} is confirmed. You can start a new request or view your calendar.
+            </p>
+            <div className="flex flex-col gap-2 pt-2">
+              <Button
+                className="w-full gap-2"
+                onClick={() => {
+                  setAcceptedQuote(null);
+                  navigate('/');
+                }}
+              >
+                <MessageSquare className="size-4" />
+                New prompt
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full gap-2"
+                onClick={() => {
+                  setAcceptedQuote(null);
+                  navigate('/customer/calendar');
+                }}
+              >
+                <Calendar className="size-4" />
+                My calendar
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {/* Negotiation chat modal */}
       {selectedChat && (
@@ -226,9 +281,9 @@ export function JobResponsePage() {
                             className={cn(
                               'size-6 rounded-full flex items-center justify-center text-[10px] font-bold',
                               t.type === 'result'
-                                ? 'bg-emerald-500/20 text-emerald-400'
-                                : t.type === 'action'
                                 ? 'bg-primary/20 text-primary'
+                                : t.type === 'action'
+                                ? 'bg-muted text-muted-foreground'
                                 : 'bg-muted text-muted-foreground'
                             )}
                           >
@@ -243,7 +298,7 @@ export function JobResponsePage() {
                             className={cn(
                               'text-sm mt-0.5',
                               t.type === 'result'
-                                ? 'text-emerald-400 font-medium'
+                                ? 'text-primary font-medium'
                                 : 'text-foreground'
                             )}
                           >
@@ -266,9 +321,9 @@ export function JobResponsePage() {
                             className={cn(
                               'size-6 rounded-full flex items-center justify-center text-[10px] font-bold',
                               t.type === 'result'
-                                ? 'bg-emerald-500/20 text-emerald-400'
+                                ? 'bg-primary/20 text-primary'
                                 : t.type === 'action'
-                                ? 'bg-teal-400/20 text-teal-400'
+                                ? 'bg-muted text-muted-foreground'
                                 : 'bg-muted text-muted-foreground'
                             )}
                           >
@@ -283,7 +338,7 @@ export function JobResponsePage() {
                             className={cn(
                               'text-sm mt-0.5',
                               t.type === 'result'
-                                ? 'text-emerald-400 font-medium'
+                                ? 'text-primary font-medium'
                                 : 'text-foreground'
                             )}
                           >
