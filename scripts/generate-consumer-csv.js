@@ -1,7 +1,7 @@
 /**
  * Reads jobs_data.csv, counts jobs per consumer_name,
- * and writes consumer_data.csv with one row per consumer: consumer_name, job_count.
- * Jobs are stored in jobs_data; consumers and vendors reference jobs by job_id.
+ * and writes consumer_data.csv with one row per customer: consumer_name, job_count.
+ * Jobs are stored in jobs_data; customers and vendors reference jobs by job_id.
  *
  * Run after: node scripts/generate-vendor-csv.js
  * Then: node scripts/generate-consumer-csv.js
@@ -101,5 +101,5 @@ const outCsv = [outHeader, ...outRows].join('\n');
 fs.writeFileSync(outPath, outCsv, 'utf8');
 
 const totalJobs = Object.values(byConsumer).reduce((s, c) => s + c.job_count, 0);
-console.log(`Wrote ${outRows.length} consumers to ${outPath}`);
+console.log(`Wrote ${outRows.length} customers to ${outPath}`);
 console.log(`Total jobs (from jobs_data): ${totalJobs}`);

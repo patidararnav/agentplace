@@ -123,7 +123,7 @@ export function AgentMatchingPage() {
         </div>
         <div className="mt-3 h-1 rounded-full bg-muted overflow-hidden">
           <div
-            className="h-full bg-primary rounded-full transition-all duration-700 ease-out"
+            className="h-full rounded-full transition-all duration-700 ease-out bg-[var(--success)]"
             style={{ width: `${progress}%` }}
           />
         </div>

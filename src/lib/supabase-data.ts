@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase';
-import type { VendorData, ConsumerData, JobData } from '@/types';
+import type { VendorData, CustomerData, JobData } from '@/types';
 
 const TABLE_VENDOR = import.meta.env.VITE_SUPABASE_TABLE_VENDOR ?? 'VendorData';
 const TABLE_CONSUMER = import.meta.env.VITE_SUPABASE_TABLE_CONSUMER ?? 'ConsumerData';
@@ -27,7 +27,7 @@ function rowToVendor(row: Record<string, unknown>): VendorData {
   };
 }
 
-function rowToConsumer(row: Record<string, unknown>): ConsumerData {
+function rowToCustomer(row: Record<string, unknown>): CustomerData {
   const jobIds = Array.isArray(row.job_ids) ? (row.job_ids as number[]) : [];
   return {
     consumer_name: (row.consumer_name as string) ?? '',
@@ -78,8 +78,8 @@ export async function fetchVendors(): Promise<FetchResult<VendorData>> {
   return { error: 'Could not load vendors' };
 }
 
-/** Fetches consumers, most jobs first then by name. */
-export async function fetchConsumers(): Promise<FetchResult<ConsumerData>> {
+/** Fetches customers, most jobs first then by name. */
+export async function fetchCustomers(): Promise<FetchResult<CustomerData>> {
   const { data, error } = await supabase
     .from(TABLE_CONSUMER)
     .select('*')
@@ -87,10 +87,10 @@ export async function fetchConsumers(): Promise<FetchResult<ConsumerData>> {
     .order('consumer_name', { ascending: true });
   if (error) {
     const msg = `${error.message}${error.code ? ` [${error.code}]` : ''}`;
-    console.warn('Supabase consumers:', msg);
+    console.warn('Supabase customers:', msg);
     return { error: msg };
   }
-  return { data: (data ?? []).map((row) => rowToConsumer(row as Record<string, unknown>)) };
+  return { data: (data ?? []).map((row) => rowToCustomer(row as Record<string, unknown>)) };
 }
 
 /** Fetches all jobs from Jobs table. Tries JobsData then jobs_data if first fails. */
@@ -145,8 +145,8 @@ export async function fetchJobsForVendor(
   return [];
 }
 
-/** Fetches jobs for one consumer: by job_ids if provided, otherwise by consumer_name. Uses JobsData then jobs_data. */
-export async function fetchJobsForConsumer(
+/** Fetches jobs for one customer: by job_ids if provided, otherwise by consumer_name. Uses JobsData then jobs_data. */
+export async function fetchJobsForCustomer(
   consumerName: string,
   jobIds?: number[]
 ): Promise<JobData[]> {
@@ -168,7 +168,7 @@ export async function fetchJobsForConsumer(
       error.code === '42P01' ||
       /does not exist|relation.*not found/i.test(error.message);
     if (!isNotFound || tableName === tableNames[tableNames.length - 1]) {
-      console.warn('Supabase fetchJobsForConsumer:', error.message);
+      console.warn('Supabase fetchJobsForCustomer:', error.message);
       return [];
     }
   }
@@ -237,12 +237,55 @@ export async function insertVendor(payload: {
   return data ? rowToVendor(data as Record<string, unknown>) : null;
 }
 
-/** Insert new consumer. Returns { data } on success or { error: string } on failure. */
-export async function insertConsumer(payload: {
+/** Update existing vendor by vendor_id. Returns updated VendorData or null. */
+export async function updateVendor(
+  vendorId: number,
+  payload: {
+    name: string;
+    weekly_availability: Record<string, string[] | null>;
+    max_distance_miles: number;
+    home_location: { lat: number; lng: number };
+    experience_years: number;
+    negotiation_aggression: number;
+    job_types: { type: string; price: number; duration_minutes: number }[];
+    job_ids?: number[] | null;
+    reviews?: string[] | null;
+    average_rating?: string | number | null;
+    total_ratings?: string | number | null;
+  }
+): Promise<VendorData | null> {
+  const row: Record<string, unknown> = {
+    name: payload.name,
+    weekly_availability: payload.weekly_availability,
+    max_distance_miles: payload.max_distance_miles,
+    home_location: payload.home_location,
+    experience_years: payload.experience_years,
+    negotiation_aggression: payload.negotiation_aggression,
+    job_types: payload.job_types,
+    job_ids: payload.job_ids ?? [],
+    reviews: payload.reviews ?? [],
+    average_rating: payload.average_rating != null ? String(payload.average_rating) : null,
+    total_ratings: payload.total_ratings != null ? String(payload.total_ratings) : null,
+  };
+  const { data, error } = await supabase
+    .from(TABLE_VENDOR)
+    .update(row)
+    .eq('vendor_id', vendorId)
+    .select()
+    .single();
+  if (error) {
+    console.warn('Supabase update vendor:', error.message);
+    return null;
+  }
+  return data ? rowToVendor(data as Record<string, unknown>) : null;
+}
+
+/** Insert new customer. Returns { data } on success or { error: string } on failure. */
+export async function insertCustomer(payload: {
   consumer_name: string;
   job_count?: number;
   job_ids?: number[] | null;
-}): Promise<{ data: ConsumerData } | { error: string }> {
+}): Promise<{ data: CustomerData } | { error: string }> {
   const row = {
     consumer_name: payload.consumer_name,
     job_count: payload.job_count ?? 0,
@@ -251,17 +294,17 @@ export async function insertConsumer(payload: {
   const { data, error } = await supabase.from(TABLE_CONSUMER).insert(row).select().single();
   if (error) {
     const msg = error.message + (error.hint ? ` (${error.hint})` : '') + (error.code ? ` [${error.code}]` : '');
-    console.warn('Supabase insert consumer:', msg);
+    console.warn('Supabase insert customer:', msg);
     return { error: msg };
   }
-  return data ? { data: rowToConsumer(data as Record<string, unknown>) } : { error: 'No data returned' };
+  return data ? { data: rowToCustomer(data as Record<string, unknown>) } : { error: 'No data returned' };
 }
 
 /** Log Supabase connection/table errors for debugging. Call from app init if needed. */
 export async function checkSupabaseAccess(): Promise<{ ok: boolean; message: string }> {
   const { error } = await supabase.from(TABLE_CONSUMER).select('consumer_name').limit(1);
   if (error) {
-    return { ok: false, message: `ConsumerData: ${error.message} (code: ${error.code}). Enable RLS policies or disable RLS for the table.` };
+    return { ok: false, message: `CustomerData: ${error.message} (code: ${error.code}). Enable RLS policies or disable RLS for the table.` };
   }
   return { ok: true, message: 'Connected' };
 }

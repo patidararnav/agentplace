@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { ArrowRight, Sparkles, Wrench, Calendar } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Button } from '@/components/ui/button';
@@ -11,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { insertConsumer } from '@/lib/supabase-data';
+import { insertCustomer } from '@/lib/supabase-data';
 import { cn } from '@/lib/utils';
 
 const SUGGESTIONS = [
@@ -23,13 +23,15 @@ const SUGGESTIONS = [
 
 export function PromptPage() {
   const [prompt, setPrompt] = useState('');
-  const [consumerOpen, setConsumerOpen] = useState(false);
-  const [consumerSearch, setConsumerSearch] = useState('');
-  const [newConsumerName, setNewConsumerName] = useState('');
-  const [creatingConsumer, setCreatingConsumer] = useState(false);
-  const [consumerError, setConsumerError] = useState('');
+  const [customerOpen, setCustomerOpen] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [newCustomerName, setNewCustomerName] = useState('');
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
+  const [customerError, setCustomerError] = useState('');
   const navigate = useNavigate();
-  const { setLastPrompt, userLocation, setUserLocation, consumers, selectedConsumer, setSelectedConsumer, refetchConsumers, dataError } = useApp();
+  const location = useLocation();
+  const promptSelectCustomer = (location.state as { promptSelectCustomer?: boolean } | null)?.promptSelectCustomer ?? false;
+  const { setLastPrompt, userLocation, setUserLocation, customers, selectedCustomer, setSelectedCustomer, refetchCustomers, dataError } = useApp();
 
   useEffect(() => {
     if (!userLocation) setUserLocation({ lat: 37.4419, lng: -122.143 });
@@ -49,29 +51,29 @@ export function PromptPage() {
     }
   };
 
-  const filteredConsumers = consumerSearch.trim()
-    ? consumers.filter((c) =>
-        c.consumer_name.toLowerCase().includes(consumerSearch.toLowerCase())
+  const filteredCustomers = customerSearch.trim()
+    ? customers.filter((c) =>
+        c.consumer_name.toLowerCase().includes(customerSearch.toLowerCase())
       )
-    : consumers;
-  const sortedConsumers = [...filteredConsumers].sort(
+    : customers;
+  const sortedCustomers = [...filteredCustomers].sort(
     (a, b) => b.job_count - a.job_count || a.consumer_name.localeCompare(b.consumer_name)
   );
 
-  const handleCreateConsumer = async () => {
-    const name = newConsumerName.trim();
+  const handleCreateCustomer = async () => {
+    const name = newCustomerName.trim();
     if (!name) return;
-    setCreatingConsumer(true);
-    const result = await insertConsumer({ consumer_name: name, job_count: 0, job_ids: [] });
-    setCreatingConsumer(false);
+    setCreatingCustomer(true);
+    const result = await insertCustomer({ consumer_name: name, job_count: 0, job_ids: [] });
+    setCreatingCustomer(false);
     if ('data' in result) {
-      await refetchConsumers();
-      setSelectedConsumer(result.data);
-      setNewConsumerName('');
-      setConsumerOpen(false);
-      setConsumerError('');
+      await refetchCustomers();
+      setSelectedCustomer(result.data);
+      setNewCustomerName('');
+      setCustomerOpen(false);
+      setCustomerError('');
     } else {
-      setConsumerError(result.error);
+      setCustomerError(result.error);
     }
   };
 
@@ -88,14 +90,14 @@ export function PromptPage() {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {/* Consumer picker */}
+          {/* Customer picker */}
           <Button
             variant="ghost"
             size="sm"
             className="text-muted-foreground hover:text-foreground"
-            onClick={() => setConsumerOpen(true)}
+            onClick={() => setCustomerOpen(true)}
           >
-            {selectedConsumer ? selectedConsumer.consumer_name : 'Choose consumer'}
+            {selectedCustomer ? selectedCustomer.consumer_name : 'Choose customer'}
           </Button>
           <Button
             variant="ghost"
@@ -118,24 +120,30 @@ export function PromptPage() {
         </div>
       </header>
 
+      {promptSelectCustomer && !selectedCustomer && (
+        <div className="mx-6 mt-2 rounded-lg bg-primary/10 border border-primary/20 px-4 py-2 text-sm text-foreground">
+          Select a customer below to view your calendar after booking a job.
+        </div>
+      )}
+
       {/* Hero */}
       <main className="flex-1 flex flex-col items-center justify-center px-6 pb-16">
         <div className="w-full max-w-xl space-y-8">
           <div className="space-y-2 text-center">
             <style>{`
-              @keyframes orangeShift {
+              @keyframes gradientFlow {
                 0% { background-position: 0% 50%; }
                 50% { background-position: 100% 50%; }
                 100% { background-position: 0% 50%; }
               }
               .gradient-heading-animated {
-                background: linear-gradient(270deg, #ff6a00, #ff9f43, #f59e0b, #ffbe76, #ff4757, #ff6348, #ff6a00) !important;
-                background-size: 300% 300% !important;
+                background: linear-gradient(90deg, #ff6a00, #ff9f43, #f59e0b, #ffbe76, #ff4757, #ff6348, #ff6a00, #ff9f43) !important;
+                background-size: 200% 100% !important;
                 -webkit-background-clip: text !important;
                 -webkit-text-fill-color: transparent !important;
                 background-clip: text !important;
                 color: transparent !important;
-                animation: orangeShift 5s ease infinite !important;
+                animation: gradientFlow 4s linear infinite !important;
               }
             `}</style>
             <h1 className="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight leading-[1.1]">
@@ -201,49 +209,49 @@ export function PromptPage() {
         </div>
       </main>
 
-      {/* Consumer picker dialog */}
-      <Dialog open={consumerOpen} onOpenChange={setConsumerOpen}>
+      {/* Customer picker dialog */}
+      <Dialog open={customerOpen} onOpenChange={setCustomerOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Choose or create consumer</DialogTitle>
+            <DialogTitle>Choose or create customer</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            {consumerError && (
+            {customerError && (
               <p className="text-sm text-destructive bg-destructive/10 rounded-lg px-3 py-2">
-                {consumerError}
+                {customerError}
               </p>
             )}
-            {dataError?.consumers && (
+            {dataError?.customers && (
               <div className="rounded-lg bg-destructive/10 text-destructive text-sm px-3 py-2 space-y-1">
-                <p className="font-medium">Could not load consumers</p>
-                <p className="text-xs">{dataError.consumers}</p>
+                <p className="font-medium">Could not load customers</p>
+                <p className="text-xs">{dataError.customers}</p>
                 <p className="text-xs opacity-90">Check table name (ConsumerData), RLS policies, and SUPABASE_SETUP.md.</p>
               </div>
             )}
             <Input
               placeholder="Search by name..."
-              value={consumerSearch}
-              onChange={(e) => setConsumerSearch(e.target.value)}
+              value={customerSearch}
+              onChange={(e) => setCustomerSearch(e.target.value)}
               className="w-full"
             />
-            {sortedConsumers.length === 0 && !dataError?.consumers ? (
+            {sortedCustomers.length === 0 && !dataError?.customers ? (
               <div className="text-sm text-muted-foreground py-4 text-center space-y-1">
-                <p>No consumers loaded. You have data in Supabase?</p>
+                <p>No customers loaded. You have data in Supabase?</p>
                 <p className="text-xs">If yes, RLS may be blocking SELECT. Run in SQL Editor: ALTER TABLE public.&quot;ConsumerData&quot; DISABLE ROW LEVEL SECURITY;</p>
               </div>
-            ) : sortedConsumers.length === 0 ? null : (
+            ) : sortedCustomers.length === 0 ? null : (
             <div className="max-h-[200px] overflow-auto space-y-1">
-              {sortedConsumers.slice(0, 50).map((c) => (
+              {sortedCustomers.slice(0, 50).map((c) => (
                 <button
                   key={c.consumer_name}
                   type="button"
                   onClick={() => {
-                    setSelectedConsumer(c);
-                    setConsumerOpen(false);
+                    setSelectedCustomer(c);
+                    setCustomerOpen(false);
                   }}
                   className={cn(
                     'w-full text-left px-3 py-2 rounded-lg text-sm transition-colors',
-                    selectedConsumer?.consumer_name === c.consumer_name
+                    selectedCustomer?.consumer_name === c.consumer_name
                       ? 'bg-primary/15 text-primary font-medium'
                       : 'hover:bg-muted'
                   )}
@@ -258,13 +266,13 @@ export function PromptPage() {
             )}
             <div className="border-t border-border pt-4 flex gap-2">
               <Input
-                placeholder="New consumer name"
-                value={newConsumerName}
-                onChange={(e) => setNewConsumerName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleCreateConsumer()}
+                placeholder="New customer name"
+                value={newCustomerName}
+                onChange={(e) => setNewCustomerName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleCreateCustomer()}
               />
-              <Button onClick={handleCreateConsumer} disabled={!newConsumerName.trim() || creatingConsumer}>
-                {creatingConsumer ? 'Creating…' : 'Create'}
+              <Button onClick={handleCreateCustomer} disabled={!newCustomerName.trim() || creatingCustomer}>
+                {creatingCustomer ? 'Creating…' : 'Create'}
               </Button>
             </div>
           </div>

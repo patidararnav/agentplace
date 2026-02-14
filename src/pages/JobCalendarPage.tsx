@@ -6,8 +6,8 @@ import type { PlannedJob } from '@/types';
 import type { JobData } from '@/types';
 import { Button } from '@/components/ui/button';
 import { useApp } from '@/context/AppContext';
-import { fetchJobsForConsumer } from '@/lib/supabase-data';
-import { cn } from '@/lib/utils';
+import { fetchJobsForCustomer } from '@/lib/supabase-data';
+import { cn, getStatusColorClasses } from '@/lib/utils';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -19,6 +19,7 @@ function jobDataToPlannedJob(job: JobData, vendorName: string): PlannedJob {
   return {
     id: String(job.job_id),
     vendorName,
+    customerName: job.consumer_name,
     jobType: job.type,
     price: job.price,
     dateTime,
@@ -30,7 +31,7 @@ function jobDataToPlannedJob(job: JobData, vendorName: string): PlannedJob {
 
 export function JobCalendarPage() {
   const navigate = useNavigate();
-  const { selectedConsumer, vendors } = useApp();
+  const { selectedCustomer, vendors } = useApp();
   const [calendarJobs, setCalendarJobs] = useState<JobData[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [viewDate, setViewDate] = useState(new Date());
@@ -65,19 +66,19 @@ export function JobCalendarPage() {
   }, [selectedDateKey, jobsByDate]);
 
   useEffect(() => {
-    if (!selectedConsumer) {
+    if (!selectedCustomer) {
       setCalendarJobs([]);
       return;
     }
     setJobsLoading(true);
-    const jobIds = (selectedConsumer.job_ids ?? []).map((id) => Number(id));
-    fetchJobsForConsumer(
-      selectedConsumer.consumer_name,
+    const jobIds = (selectedCustomer.job_ids ?? []).map((id) => Number(id));
+    fetchJobsForCustomer(
+      selectedCustomer.consumer_name,
       jobIds.length > 0 ? jobIds : undefined
     )
       .then(setCalendarJobs)
       .finally(() => setJobsLoading(false));
-  }, [selectedConsumer]);
+  }, [selectedCustomer]);
 
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth();
@@ -91,7 +92,6 @@ export function JobCalendarPage() {
   for (let d = 1; d <= daysInMonth; d++) days.push(d);
 
   const today = new Date();
-  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   const isToday = (day: number) =>
     year === today.getFullYear() && month === today.getMonth() && day === today.getDate();
 
@@ -110,7 +110,7 @@ export function JobCalendarPage() {
     navigate('/customer/tracking', { state: { job, fromCalendar: true } });
   }
 
-  if (!selectedConsumer) {
+  if (!selectedCustomer) {
     return (
       <div className="min-h-svh bg-background flex flex-col">
         <header className="px-6 py-4 flex-shrink-0 border-b border-border/40">
@@ -123,13 +123,13 @@ export function JobCalendarPage() {
             </div>
             <div>
               <h1 className="text-base font-semibold text-foreground">Your jobs</h1>
-              <p className="text-xs text-muted-foreground">Choose a consumer on the home page to see their calendar.</p>
+              <p className="text-xs text-muted-foreground">Choose a customer on the home page to see their calendar.</p>
             </div>
           </div>
         </header>
         <main className="flex-1 flex items-center justify-center p-6">
           <p className="text-muted-foreground text-center">
-            Select a consumer from the home page to view their job calendar.
+            Select a customer from the home page to view their job calendar.
           </p>
         </main>
       </div>
@@ -149,7 +149,7 @@ export function JobCalendarPage() {
           <div>
             <h1 className="text-base font-semibold text-foreground">Your jobs</h1>
             <p className="text-xs text-muted-foreground">
-              {selectedConsumer.consumer_name} · {consumerJobs.length} job{consumerJobs.length !== 1 ? 's' : ''}
+              {selectedCustomer.consumer_name} · {consumerJobs.length} job{consumerJobs.length !== 1 ? 's' : ''}
             </p>
           </div>
         </div>
@@ -207,7 +207,10 @@ export function JobCalendarPage() {
                     {dayJobs.map((job) => (
                       <div
                         key={job.id}
-                        className="rounded-md bg-primary/10 px-2 py-1 text-xs text-foreground truncate"
+                        className={cn(
+                          'rounded-md border px-2 py-1 text-xs truncate',
+                          getStatusColorClasses(job.status)
+                        )}
                       >
                         {job.vendorName}
                       </div>

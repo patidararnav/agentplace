@@ -1,14 +1,55 @@
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, ArrowLeft, Calendar, Wrench, TrendingUp, Star, Briefcase } from 'lucide-react';
+import { Pencil, Plus, ArrowLeft, Calendar, Wrench, TrendingUp, Star, Briefcase, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import { useApp } from '@/context/AppContext';
 
 export function VendorDashboard() {
   const navigate = useNavigate();
-  const { selectedVendor, vendors, setSelectedVendor } = useApp();
+  const { selectedVendor, vendors, jobs, setSelectedVendor } = useApp();
   const vendor = selectedVendor;
+  const [vendorSearch, setVendorSearch] = useState('');
+
+  const filteredVendors = useMemo(() => {
+    const q = vendorSearch.trim().toLowerCase();
+    if (!q) return vendors;
+    return vendors.filter((v) => {
+      if (v.name.toLowerCase().includes(q)) return true;
+      const serviceNames = (v.job_types ?? []).map((jt) => jt.type.toLowerCase()).join(' ');
+      return serviceNames.includes(q) || (v.job_types ?? []).some((jt) => jt.type.toLowerCase().includes(q));
+    });
+  }, [vendors, vendorSearch]);
+
+  const vendorJobs = vendor ? jobs.filter((j) => j.vendor_id === vendor.vendor_id) : [];
+  const unfinishedCount = vendorJobs.filter((j) => (j.status ?? 0) < 7).length;
+
+  const jobTypes = vendor?.job_types ?? [];
+  const serviceStats = vendor
+    ? jobTypes.map((jt) => {
+        const typeMatch = (j: { type: string }) => {
+          const a = (j.type || '').toLowerCase();
+          const b = (jt.type || '').toLowerCase();
+          return a === b || a.includes(b) || b.includes(a);
+        };
+        const completed = vendorJobs.filter(
+          (j) => typeMatch(j) && (j.status ?? 0) >= 7
+        );
+        const totalRevenue = completed.reduce(
+          (sum, j) => sum + (j.price ?? 0),
+          0
+        );
+        return {
+          type: jt.type,
+          duration_minutes: jt.duration_minutes,
+          price: jt.price,
+          completed: completed.length,
+          totalRevenue: Math.round(totalRevenue * 100) / 100,
+        };
+      })
+    : [];
 
   return (
     <div className="min-h-svh bg-background flex flex-col">
@@ -33,10 +74,12 @@ export function VendorDashboard() {
               <Calendar className="size-3.5" />
               Calendar
             </Button>
-            <Button size="sm" className="gap-1.5" onClick={() => navigate('/vendor/new-service')}>
-              <Plus className="size-3.5" />
-              New service
-            </Button>
+            {vendor && (
+              <Button size="sm" className="gap-1.5" onClick={() => navigate('/vendor/edit')}>
+                <Pencil className="size-3.5" />
+                Edit vendor
+              </Button>
+            )}
           </div>
         </div>
       </header>
@@ -56,10 +99,23 @@ export function VendorDashboard() {
                   Create new vendor
                 </Button>
                 {vendors.length > 0 && (
-                  <div className="pt-4 border-t border-border/30 space-y-2">
+                  <div className="pt-4 border-t border-border/30 space-y-3">
                     <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Existing vendors</p>
+                    <div className="max-w-md mx-auto relative">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+                      <Input
+                        type="search"
+                        placeholder="Search by name or service..."
+                        value={vendorSearch}
+                        onChange={(e) => setVendorSearch(e.target.value)}
+                        className="pl-9 bg-muted/30 border-border"
+                      />
+                    </div>
                     <div className="grid gap-2 max-w-md mx-auto">
-                      {vendors.map((v) => (
+                      {filteredVendors.length === 0 ? (
+                        <p className="text-sm text-muted-foreground py-4 text-center">No vendors match your search.</p>
+                      ) : (
+                      filteredVendors.map((v) => (
                         <button
                           key={v.vendor_id}
                           type="button"
@@ -68,7 +124,7 @@ export function VendorDashboard() {
                         >
                           <div>
                             <p className="text-sm font-medium text-foreground">{v.name}</p>
-                            <p className="text-xs text-muted-foreground">{v.job_types.length} services · {v.experience_years}yr exp</p>
+                            <p className="text-xs text-muted-foreground">{v.job_types.length} services</p>
                           </div>
                           {v.average_rating != null && Number(v.average_rating) > 0 && (
                             <Badge variant="secondary" className="text-xs gap-1">
@@ -77,7 +133,8 @@ export function VendorDashboard() {
                             </Badge>
                           )}
                         </button>
-                      ))}
+                      ))
+                      )}
                     </div>
                   </div>
                 )}
@@ -108,8 +165,8 @@ export function VendorDashboard() {
                         <TrendingUp className="size-5 text-primary" />
                       </div>
                       <div>
-                        <p className="text-2xl font-bold text-foreground">{vendor.experience_years}</p>
-                        <p className="text-xs text-muted-foreground">Years experience</p>
+                        <p className="text-2xl font-bold text-foreground">{unfinishedCount}</p>
+                        <p className="text-xs text-muted-foreground">Unfinished jobs</p>
                       </div>
                     </div>
                   </CardContent>
@@ -134,30 +191,41 @@ export function VendorDashboard() {
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-semibold text-foreground">Services</h2>
-                  <Button variant="outline" size="sm" className="gap-1.5" onClick={() => navigate('/vendor/new-service')}>
-                    <Plus className="size-3.5" />
-                    Add service
+                  <Button variant="outline" size="sm" className="gap-1.5" onClick={() => navigate('/vendor/edit')}>
+                    <Pencil className="size-3.5" />
+                    Edit vendor
                   </Button>
                 </div>
                 {vendor.job_types.length === 0 ? (
                   <Card>
                     <CardContent className="p-6 text-center text-muted-foreground">
-                      No services yet. Add your first service to start receiving jobs.
+                      No services yet. Edit vendor to add job types and availability.
                     </CardContent>
                   </Card>
                 ) : (
                   <div className="grid gap-3">
-                    {vendor.job_types.map((jt, i) => (
-                      <Card key={i}>
-                        <CardContent className="p-4 flex items-center justify-between">
-                          <div>
-                            <p className="font-medium text-foreground">{jt.type}</p>
-                            <p className="text-sm text-muted-foreground">{jt.duration_minutes} min · Max {vendor.max_distance_miles} mi</p>
-                          </div>
-                          <p className="text-lg font-bold text-foreground">${jt.price}</p>
-                        </CardContent>
-                      </Card>
-                    ))}
+                    {vendor.job_types.map((jt, i) => {
+                      const stat = serviceStats[i];
+                      const total = stat?.totalRevenue ?? 0;
+                      const completed = stat?.completed ?? 0;
+                      return (
+                        <Card key={i}>
+                          <CardContent className="p-4 flex items-center justify-between gap-4">
+                            <div>
+                              <p className="font-medium text-foreground">{jt.type}</p>
+                              <p className="text-sm text-muted-foreground">
+                                {jt.duration_minutes} min · ${jt.price}
+                              </p>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <p className="text-lg font-bold text-foreground">
+                                ${total.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} / {completed} job{completed !== 1 ? 's' : ''}
+                              </p>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
                   </div>
                 )}
               </div>

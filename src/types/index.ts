@@ -1,7 +1,7 @@
-/* ── Job status: 1=Concierge, 2=Matching, 3=Negotiating, 4=Ranking, 5=Booked, 6+=In progress/Completed/Payment ── */
+/* ── Job status: 1=Concierge, 2=Matching, 3=Negotiating, 4=Ranking, 5=Booked, 6=In progress, 7=Project completed, 8=Payment sent, 9=Payment received ── */
 export type JobStatus = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
-/* ── Jobs DB: one row per job; vendor and consumer reference by id/name ── */
+/* ── Jobs DB: one row per job; vendor and customer reference by id/name ── */
 export interface JobData {
   job_id: number;
   vendor_id: number;
@@ -31,11 +31,11 @@ export interface VendorData {
   job_ids?: number[];
 }
 
-/* ── Consumer DB: identity, count, and list of job ids ── */
-export interface ConsumerData {
-  consumer_name: string;
+/* ── Customer DB: identity, count, and list of job ids ── */
+export interface CustomerData {
+  consumer_name: string; // DB column name
   job_count: number;
-  /** List of job_ids for this consumer */
+  /** List of job_ids for this customer */
   job_ids?: number[];
 }
 
@@ -86,6 +86,8 @@ export interface VendorQuote {
 export interface PlannedJob {
   id: string;
   vendorName: string;
+  /** Customer name (for vendor tracking view) */
+  customerName?: string;
   jobType: string;
   price: number;
   dateTime: string;

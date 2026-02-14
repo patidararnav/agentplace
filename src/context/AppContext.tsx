@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
-import type { UserLocation, VendorData, ConsumerData, JobData } from '@/types';
+import type { UserLocation, VendorData, CustomerData, JobData } from '@/types';
 import { defaultUserLocation } from '@/data/mock';
-import { fetchVendors, fetchConsumers, fetchJobs } from '@/lib/supabase-data';
+import { fetchVendors, fetchCustomers, fetchJobs } from '@/lib/supabase-data';
 
 interface AppState {
   userLocation: UserLocation | null;
@@ -9,20 +9,23 @@ interface AppState {
   lastPrompt: string;
   setLastPrompt: (p: string) => void;
   vendors: VendorData[];
-  consumers: ConsumerData[];
+  customers: CustomerData[];
   jobs: JobData[];
   dataLoading: boolean;
   /** Set when fetch fails (e.g. RLS, wrong table name). Empty string when OK. */
-  dataError: { vendors?: string; consumers?: string; jobs?: string };
+  dataError: { vendors?: string; customers?: string; jobs?: string };
   refetchVendors: () => Promise<void>;
-  refetchConsumers: () => Promise<void>;
+  refetchCustomers: () => Promise<void>;
   refetchJobs: () => Promise<void>;
   refetchAll: () => Promise<void>;
   selectedVendor: VendorData | null;
   setSelectedVendor: (v: VendorData | null) => void;
-  selectedConsumer: ConsumerData | null;
-  setSelectedConsumer: (c: ConsumerData | null) => void;
+  selectedCustomer: CustomerData | null;
+  setSelectedCustomer: (c: CustomerData | null) => void;
 }
+
+const STORAGE_KEY_VENDOR = 'agentplace_selected_vendor_id';
+const STORAGE_KEY_CUSTOMER = 'agentplace_selected_customer_name';
 
 const AppContext = createContext<AppState | null>(null);
 
@@ -30,12 +33,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [userLocation, setUserLocation] = useState<UserLocation | null>(defaultUserLocation);
   const [lastPrompt, setLastPrompt] = useState('');
   const [vendors, setVendors] = useState<VendorData[]>([]);
-  const [consumers, setConsumers] = useState<ConsumerData[]>([]);
+  const [customers, setCustomers] = useState<CustomerData[]>([]);
   const [jobs, setJobs] = useState<JobData[]>([]);
   const [dataLoading, setDataLoading] = useState(true);
-  const [dataError, setDataError] = useState<{ vendors?: string; consumers?: string; jobs?: string }>({});
-  const [selectedVendor, setSelectedVendor] = useState<VendorData | null>(null);
-  const [selectedConsumer, setSelectedConsumer] = useState<ConsumerData | null>(null);
+  const [dataError, setDataError] = useState<{ vendors?: string; customers?: string; jobs?: string }>({});
+  const [selectedVendor, setSelectedVendorState] = useState<VendorData | null>(null);
+  const [selectedCustomer, setSelectedCustomerState] = useState<CustomerData | null>(null);
+
+  const setSelectedVendor = useCallback((v: VendorData | null) => {
+    setSelectedVendorState(v);
+    try {
+      localStorage.setItem(STORAGE_KEY_VENDOR, String(v?.vendor_id ?? ''));
+    } catch (_) {}
+  }, []);
+  const setSelectedCustomer = useCallback((c: CustomerData | null) => {
+    setSelectedCustomerState(c);
+    try {
+      localStorage.setItem(STORAGE_KEY_CUSTOMER, c?.consumer_name ?? '');
+    } catch (_) {}
+  }, []);
 
   const refetchVendors = useCallback(async () => {
     const result = await fetchVendors();
@@ -47,14 +63,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setVendors(result.data ?? []);
     }
   }, []);
-  const refetchConsumers = useCallback(async () => {
-    const result = await fetchConsumers();
+  const refetchCustomers = useCallback(async () => {
+    const result = await fetchCustomers();
     if (result.error) {
-      setDataError((e) => ({ ...e, consumers: result.error }));
-      setConsumers([]);
+      setDataError((e) => ({ ...e, customers: result.error }));
+      setCustomers([]);
     } else {
-      setDataError((e) => ({ ...e, consumers: undefined }));
-      setConsumers(result.data ?? []);
+      setDataError((e) => ({ ...e, customers: undefined }));
+      setCustomers(result.data ?? []);
     }
   }, []);
   const refetchJobs = useCallback(async () => {
@@ -70,13 +86,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const refetchAll = useCallback(async () => {
     setDataLoading(true);
     setDataError({});
-    await Promise.all([refetchVendors(), refetchConsumers(), refetchJobs()]);
+    await Promise.all([refetchVendors(), refetchCustomers(), refetchJobs()]);
     setDataLoading(false);
-  }, [refetchVendors, refetchConsumers, refetchJobs]);
+  }, [refetchVendors, refetchCustomers, refetchJobs]);
 
   useEffect(() => {
     refetchAll();
   }, [refetchAll]);
+
+  // Persist selection to localStorage (done in setters). Restore after load and re-sync when lists change.
+  useEffect(() => {
+    if (vendors.length === 0 && customers.length === 0) return;
+    const savedVendorId = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY_VENDOR) : null;
+    const savedCustomerName = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY_CUSTOMER) : null;
+    if (vendors.length > 0) {
+      if (selectedVendor?.vendor_id != null) {
+        const found = vendors.find((v) => v.vendor_id === selectedVendor.vendor_id);
+        if (found && found !== selectedVendor) setSelectedVendorState(found);
+      } else if (savedVendorId && String(savedVendorId).trim() !== '') {
+        const id = Number(savedVendorId);
+        if (!Number.isNaN(id)) {
+          const found = vendors.find((v) => v.vendor_id === id);
+          if (found) setSelectedVendorState(found);
+        }
+      }
+    }
+    if (customers.length > 0) {
+      if (selectedCustomer?.consumer_name != null) {
+        const found = customers.find((c) => c.consumer_name === selectedCustomer.consumer_name);
+        if (found && found !== selectedCustomer) setSelectedCustomerState(found);
+      } else if (savedCustomerName) {
+        const found = customers.find((c) => c.consumer_name === savedCustomerName);
+        if (found) setSelectedCustomerState(found);
+      }
+    }
+  }, [vendors, customers, selectedVendor?.vendor_id, selectedCustomer?.consumer_name]);
 
   return (
     <AppContext.Provider
@@ -86,18 +130,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
         lastPrompt,
         setLastPrompt,
         vendors,
-        consumers,
+        customers,
         jobs,
         dataLoading,
         dataError,
         refetchVendors,
-        refetchConsumers,
+        refetchCustomers,
         refetchJobs,
         refetchAll,
         selectedVendor,
         setSelectedVendor,
-        selectedConsumer,
-        setSelectedConsumer,
+        selectedCustomer,
+        setSelectedCustomer,
       }}
     >
       {children}

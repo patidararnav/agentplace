@@ -1,6 +1,6 @@
 /**
  * Reads vendor_data.csv, groups all upcoming_jobs by consumer_name,
- * and writes consumer_data.csv with one row per consumer and their jobs.
+ * and writes consumer_data.csv with one row per customer and their jobs.
  *
  * Run: node scripts/vendor-to-consumer-csv.js
  */
@@ -127,5 +127,5 @@ for (const [consumerName, jobs] of Object.entries(byConsumer)) {
 const outCsv = [outHeader, ...outRows].join('\n');
 fs.writeFileSync(outPath, outCsv, 'utf8');
 
-console.log(`Wrote ${outRows.length} consumers to ${outPath}`);
+console.log(`Wrote ${outRows.length} customers to ${outPath}`);
 console.log(`Total jobs: ${Object.values(byConsumer).reduce((s, j) => s + j.length, 0)}`);

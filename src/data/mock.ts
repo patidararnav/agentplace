@@ -189,7 +189,7 @@ export const mockAgentSteps: AgentStep[] = [
   {
     id: 'scheduling',
     label: '⑤ Scheduling Agent — Finding time slots',
-    detail: 'Cross-referencing vendor availability × consumer preference • 3 slots confirmed across top vendors',
+    detail: 'Cross-referencing vendor availability × customer preference • 3 slots confirmed across top vendors',
     status: 'pending',
     agentType: 'system',
   },

@@ -16,7 +16,7 @@ const JOB_STATUS_LABELS: Record<JobStatus, string> = {
   4: 'Ranking',
   5: 'Booked',
   6: 'In progress',
-  7: 'Completed',
+  7: 'Project completed',
   8: 'Payment sent',
   9: 'Payment received',
 };

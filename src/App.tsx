@@ -6,9 +6,9 @@ import { JobResponsePage } from '@/pages/JobResponsePage';
 import { JobCalendarPage } from '@/pages/JobCalendarPage';
 import { FulfillmentPage } from '@/pages/FulfillmentPage';
 import { VendorDashboard } from '@/pages/VendorDashboard';
-import { NewServicePage } from '@/pages/NewServicePage';
 import { NewVendorPage } from '@/pages/NewVendorPage';
-import { NewConsumerPage } from '@/pages/NewConsumerPage';
+import { EditVendorPage } from '@/pages/EditVendorPage';
+import { NewCustomerPage } from '@/pages/NewCustomerPage';
 import { VendorCalendarPage } from '@/pages/VendorCalendarPage';
 
 function App() {
@@ -24,13 +24,14 @@ function App() {
           <Route path="/customer/results" element={<JobResponsePage />} />
           <Route path="/customer/calendar" element={<JobCalendarPage />} />
           <Route path="/customer/tracking" element={<FulfillmentPage />} />
-          <Route path="/customer/new" element={<NewConsumerPage />} />
+          <Route path="/customer/new" element={<NewCustomerPage />} />
 
           {/* Vendor flow */}
           <Route path="/vendor" element={<VendorDashboard />} />
           <Route path="/vendor/new" element={<NewVendorPage />} />
-          <Route path="/vendor/new-service" element={<NewServicePage />} />
+          <Route path="/vendor/edit" element={<EditVendorPage />} />
           <Route path="/vendor/calendar" element={<VendorCalendarPage />} />
+          <Route path="/vendor/tracking" element={<FulfillmentPage />} />
         </Routes>
       </BrowserRouter>
     </AppProvider>

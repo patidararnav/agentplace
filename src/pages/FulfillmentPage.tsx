@@ -14,25 +14,25 @@ import type { PlannedJob } from '@/types';
 import { cn } from '@/lib/utils';
 
 const FULFILLMENT_STEPS = [
-  { id: 'booked', label: 'Job Booked', detail: 'Escrow payment secured' },
-  { id: 'confirmed', label: 'Vendor Confirmed', detail: 'Vendor confirmed time' },
-  { id: 'en-route', label: 'Vendor En Route', detail: 'On the way' },
-  { id: 'arrived', label: 'Vendor Arrived', detail: 'On-site. Work starting.' },
-  { id: 'in-progress', label: 'Work In Progress', detail: 'Job in progress' },
-  { id: 'completed', label: 'Job Completed', detail: 'Work done. Confirm completion.' },
-  { id: 'payment', label: 'Payment Released', detail: 'Escrow released to vendor' },
-  { id: 'review', label: 'Leave a Review', detail: 'Rate your experience' },
+  { id: 'booked', label: 'Job booked', detail: 'Escrow secured' },
+  { id: 'in-progress', label: 'In progress', detail: 'Job in progress' },
+  { id: 'completed', label: 'Project completed', detail: 'Work done. Confirm completion.' },
+  { id: 'payment', label: 'Payment sent', detail: 'Payment sent to vendor' },
+  { id: 'received', label: 'Payment received', detail: 'Rate your experience' },
 ];
 
+/** Number of steps done (1–5) from job status: 5→1, 6→2, 7→3, 8→4, 9→5 */
 function stepsDoneFromStatus(status: number | undefined): number {
   if (status == null || status < 5) return 0;
-  const map: Record<number, number> = { 5: 1, 6: 5, 7: 6, 8: 7, 9: 8 };
+  const map: Record<number, number> = { 5: 1, 6: 2, 7: 3, 8: 4, 9: 5 };
   return map[status] ?? 0;
 }
 
 export function FulfillmentPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const pathname = location.pathname ?? '';
+  const isVendorTracking = pathname.includes('/vendor/');
   const stateJob = (location.state as { job?: PlannedJob; fromCalendar?: boolean } | null)?.job;
   const fromCalendar = (location.state as { fromCalendar?: boolean } | null)?.fromCalendar ?? false;
 
@@ -45,10 +45,11 @@ export function FulfillmentPage() {
   const [reviewText, setReviewText] = useState('');
   const [reviewSubmitted, setReviewSubmitted] = useState(() => (job?.status != null && job.status >= 9));
 
-  const stepsDoneByStatus = job?.status != null ? stepsDoneFromStatus(job.status) : (job === null ? 5 : 0);
+  const stepsDoneByStatus = job?.status != null ? stepsDoneFromStatus(job.status) : 0;
 
   const handleBack = () => {
-    if (fromCalendar) navigate('/customer/calendar');
+    if (isVendorTracking) navigate('/vendor/calendar');
+    else if (fromCalendar) navigate('/customer/calendar');
     else navigate('/customer/results');
   };
 
@@ -61,11 +62,12 @@ export function FulfillmentPage() {
   const handleSubmitReview = () => {
     setReviewSubmitted(true);
     if (job?.id) updateJobStatus(Number(job.id), 9);
-    setTimeout(() => navigate(fromCalendar ? '/customer/calendar' : '/'), 2000);
+    setTimeout(() => navigate(isVendorTracking ? '/vendor/calendar' : fromCalendar ? '/customer/calendar' : '/'), 2000);
   };
 
   const displayTitle = job?.jobType ?? 'Kitchen sink repair';
   const displayVendor = job?.vendorName ?? 'QuickFix Plumbing';
+  const displayCustomer = job?.customerName ?? '';
   const displayPrice = job?.price ?? 285;
   const displayDate = job?.dateTime
     ? new Date(job.dateTime).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
@@ -85,7 +87,9 @@ export function FulfillmentPage() {
           </div>
           <div>
             <h1 className="text-base font-semibold text-foreground">Job Tracking</h1>
-            <p className="text-xs text-muted-foreground">{displayVendor} · {displayTitle}</p>
+            <p className="text-xs text-muted-foreground">
+              {displayVendor}{displayCustomer ? ` · ${displayCustomer}` : ''} · {displayTitle}
+            </p>
           </div>
         </div>
       </header>
@@ -98,7 +102,9 @@ export function FulfillmentPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="font-semibold text-foreground">{displayTitle}</h3>
-                  <p className="text-sm text-muted-foreground">{displayVendor}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {displayVendor}{displayCustomer ? ` · ${displayCustomer}` : ''}
+                  </p>
                 </div>
                 <div className="text-right">
                   <div className="text-2xl font-bold text-foreground">${displayPrice}</div>
@@ -139,11 +145,11 @@ export function FulfillmentPage() {
                 doneFromStatus ||
                 (step.id === 'completed' && (job?.status != null && job.status >= 7 || confirmed)) ||
                 (step.id === 'payment' && (job?.status != null && job.status >= 8 || paymentReleased)) ||
-                (step.id === 'review' && (job?.status != null && job.status >= 9 || reviewSubmitted));
+                (step.id === 'received' && (job?.status != null && job.status >= 9 || reviewSubmitted || (isVendorTracking && paymentReleased)));
               const isActive = !isDone && (
-                (step.id === 'completed' && !confirmed && stepsDoneByStatus >= 5 && (job?.status == null || job.status <= 6)) ||
+                (step.id === 'completed' && !confirmed && stepsDoneByStatus >= 2 && (job?.status == null || job.status <= 6)) ||
                 (step.id === 'payment' && confirmed && !paymentReleased) ||
-                (step.id === 'review' && paymentReleased && !reviewSubmitted)
+                (step.id === 'received' && paymentReleased && !reviewSubmitted && !isVendorTracking)
               );
               const isLast = idx === FULFILLMENT_STEPS.length - 1;
 
@@ -189,7 +195,7 @@ export function FulfillmentPage() {
                     </p>
                     <p className="text-xs text-muted-foreground/70 mt-0.5">{step.detail}</p>
 
-                    {step.id === 'completed' && !confirmed && stepsDoneByStatus >= 5 && (job?.status == null || job.status <= 6) && (
+                    {step.id === 'completed' && !confirmed && stepsDoneByStatus >= 2 && (job?.status == null || job.status <= 6) && (
                       <div className="mt-3 space-y-2">
                         <div className="flex items-center gap-2 text-xs text-muted-foreground">
                           <Camera className="size-3.5" />
@@ -215,7 +221,7 @@ export function FulfillmentPage() {
                       </div>
                     )}
 
-                    {step.id === 'review' && paymentReleased && !reviewSubmitted && !reviewOpen && (
+                    {step.id === 'received' && paymentReleased && !reviewSubmitted && !reviewOpen && !isVendorTracking && (
                       <Button
                         size="sm"
                         variant="outline"
@@ -232,8 +238,8 @@ export function FulfillmentPage() {
             })}
           </div>
 
-          {/* Review form */}
-          {reviewOpen && !reviewSubmitted && (
+          {/* Review form (customer only; vendor cannot leave a review) */}
+          {!isVendorTracking && reviewOpen && !reviewSubmitted && (
             <Card>
               <CardContent className="p-5 space-y-4">
                 <h3 className="font-semibold text-foreground flex items-center gap-2">
@@ -280,7 +286,7 @@ export function FulfillmentPage() {
             </Card>
           )}
 
-          {reviewSubmitted && (
+          {!isVendorTracking && reviewSubmitted && (
             <Card className="border-[var(--success)]/30">
               <CardContent className="p-5 text-center space-y-2">
                 <CheckCircle2 className="size-10 text-[var(--success)] mx-auto" />

@@ -18,6 +18,7 @@ import {
 import { mockQuotes, mockJobStats } from '@/data/mock';
 import { NegotiationChatModal } from '@/components/NegotiationChatModal';
 import { updateJobStatus } from '@/lib/supabase-data';
+import { useApp } from '@/context/AppContext';
 import type { VendorQuote } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -48,6 +49,7 @@ const JOB_STATUS_BOOKED = 5;
 
 export function JobResponsePage() {
   const navigate = useNavigate();
+  const { selectedCustomer } = useApp();
   const [selectedChat, setSelectedChat] = useState<VendorQuote | null>(null);
   const [selectedCoT, setSelectedCoT] = useState<VendorQuote | null>(null);
   const [acceptedQuote, setAcceptedQuote] = useState<VendorQuote | null>(null);
@@ -239,6 +241,11 @@ export function JobResponsePage() {
                 variant="outline"
                 className="w-full gap-2"
                 onClick={() => {
+                  if (!selectedCustomer) {
+                    setAcceptedQuote(null);
+                    navigate('/', { state: { promptSelectCustomer: true } });
+                    return;
+                  }
                   setAcceptedQuote(null);
                   navigate('/customer/calendar');
                 }}
@@ -289,26 +296,14 @@ export function JobResponsePage() {
                     {selectedCoT.customerAgentThoughts.map((t, i) => (
                       <div key={i} className="flex gap-3">
                         <div className="flex-shrink-0 mt-1">
-                          <div
-                            className={cn(
-                              'size-6 rounded-full flex items-center justify-center text-[10px] font-bold',
-                              t.type === 'result'
-                                ? 'bg-primary/20 text-primary'
-                                : t.type === 'action'
-                                ? 'bg-muted text-muted-foreground'
-                                : 'bg-muted text-muted-foreground'
-                            )}
-                          >
-                            {i + 1}
-                          </div>
+                          <span className="text-sm font-bold text-blue-600 dark:text-blue-400">
+                            {i + 1}.
+                          </span>
                         </div>
                         <div>
-                          <span className="text-[11px] font-mono text-muted-foreground">
-                            {t.timestamp}
-                          </span>
                           <p
                             className={cn(
-                              'text-sm mt-0.5',
+                              'text-sm',
                               t.type === 'result'
                                 ? 'text-primary font-medium'
                                 : 'text-foreground'
@@ -329,26 +324,14 @@ export function JobResponsePage() {
                     {selectedCoT.vendorAgentThoughts.map((t, i) => (
                       <div key={i} className="flex gap-3">
                         <div className="flex-shrink-0 mt-1">
-                          <div
-                            className={cn(
-                              'size-6 rounded-full flex items-center justify-center text-[10px] font-bold',
-                              t.type === 'result'
-                                ? 'bg-primary/20 text-primary'
-                                : t.type === 'action'
-                                ? 'bg-muted text-muted-foreground'
-                                : 'bg-muted text-muted-foreground'
-                            )}
-                          >
-                            {i + 1}
-                          </div>
+                          <span className="text-sm font-bold text-blue-600 dark:text-blue-400">
+                            {i + 1}.
+                          </span>
                         </div>
                         <div>
-                          <span className="text-[11px] font-mono text-muted-foreground">
-                            {t.timestamp}
-                          </span>
                           <p
                             className={cn(
-                              'text-sm mt-0.5',
+                              'text-sm',
                               t.type === 'result'
                                 ? 'text-primary font-medium'
                                 : 'text-foreground'

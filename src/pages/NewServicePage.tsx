@@ -11,7 +11,7 @@ export function NewServicePage() {
 
   const [serviceName, setServiceName] = useState("");
   const [jobType, setJobType] = useState("");
-  const [hourlyRate, setHourlyRate] = useState("");
+  const [price, setPrice] = useState("");
   const [durationMinutes, setDurationMinutes] = useState("");
   const [submitted, setSubmitted] = useState(false);
 
@@ -96,20 +96,20 @@ export function NewServicePage() {
 
         <Separator />
 
-        {/* Hourly Rate */}
+        {/* Price */}
         <div className="space-y-2">
-          <Label htmlFor="hourly-rate">Hourly Rate</Label>
+          <Label htmlFor="price">Price</Label>
           <div className="relative">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">
               $
             </span>
             <Input
-              id="hourly-rate"
+              id="price"
               type="number"
               placeholder="0"
               className="pl-7"
-              value={hourlyRate}
-              onChange={(e) => setHourlyRate(e.target.value)}
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
             />
           </div>
         </div>
