@@ -111,7 +111,7 @@ export function JobResponsePage() {
                             )}
                             <Badge
                               variant="secondary"
-                              className="text-xs gap-1 text-emerald-400"
+                              className="text-xs gap-1 text-black"
                             >
                               <TrendingDown className="size-3" />
                               {savings}% off
