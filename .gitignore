@@ -4,4 +4,11 @@ __pycache__/
 *.pyc
 .env
 private_keys.json
-node_modules
+
+# Frontend
+node_modules/
+dist/
+.DS_Store
+
+# MCP
+_supabase_sim_config.json
