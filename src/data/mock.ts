@@ -256,6 +256,7 @@ export const mockQuotes: VendorQuote[] = [
       { timestamp: '0:04', text: 'Client offered $280 — below floor of $285. Counter-offering at floor price.', type: 'reasoning' },
       { timestamp: '0:05', text: 'Accepted at $285. Booking confirmed. Escrow receipt acknowledged.', type: 'result' },
     ],
+    insightTags: ['Floor price accepted', 'Parts inspection included', 'Flexible on timing'],
   },
   {
     rank: 2,
@@ -282,6 +283,7 @@ export const mockQuotes: VendorQuote[] = [
       { timestamp: '0:03', text: 'Competing quote at $285. Our floor is $280 but we offer warranty differentiation.', type: 'reasoning' },
       { timestamp: '0:04', text: 'Offering $295 with 30-day warranty — accepted as option 2.', type: 'result' },
     ],
+    insightTags: ['Competitive anchor used', '30-day warranty', 'Highest rated'],
   },
   {
     rank: 3,
@@ -307,6 +309,7 @@ export const mockQuotes: VendorQuote[] = [
       { timestamp: '0:03', text: 'Client wants $285 — below our premium service floor. Holding at $310.', type: 'reasoning' },
       { timestamp: '0:04', text: 'Final offer $310. Auto-accept rule: no further negotiation below floor.', type: 'result' },
     ],
+    insightTags: ['Premium parts', 'Firm on floor', 'Shorter slot available'],
   },
 ];
 

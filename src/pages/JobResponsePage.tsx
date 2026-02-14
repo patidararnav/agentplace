@@ -117,6 +117,18 @@ export function JobResponsePage() {
                               {savings}% off
                             </Badge>
                           </div>
+                          {q.insightTags && q.insightTags.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mt-2">
+                              {q.insightTags.map((tag) => (
+                                <span
+                                  key={tag}
+                                  className="text-[11px] px-2 py-0.5 rounded-md bg-muted/60 text-muted-foreground border border-border/50"
+                                >
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
 
