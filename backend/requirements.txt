@@ -1,2 +1,4 @@
 uagents
+uagents-core
 python-dotenv
+openai
