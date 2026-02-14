@@ -10,7 +10,7 @@ import { useApp } from '@/context/AppContext';
 import type { AgentStep } from '@/types';
 import { cn } from '@/lib/utils';
 
-/* ── 4 steps: job status 1–4 = Concierge → Matching → Negotiation → Ranking ── */
+/* ── 4 steps: Concierge → Matching → Negotiation → Ranking ── */
 const FOUR_STEPS: AgentStep[] = [
   { id: 'concierge', label: '① Concierge', detail: 'Parsing your request and structuring the job spec.', status: 'pending', agentType: 'system' },
   { id: 'matching', label: '② Matching', detail: 'Searching and ranking vendors for your job.', status: 'pending', agentType: 'system' },
@@ -18,12 +18,12 @@ const FOUR_STEPS: AgentStep[] = [
   { id: 'ranking', label: '④ Ranking', detail: 'Ranking offers and preparing your top results.', status: 'pending', agentType: 'system' },
 ];
 
-/* Spread 4 agents evenly around the circle: 360° / 4 = 90° apart */
+/* Each agent gets a unique accent color */
 const SYSTEM_AGENTS = [
-  { id: 'concierge', label: 'Concierge', icon: MessageSquare, angle: -90 },
-  { id: 'matching', label: 'Matching', icon: Search, angle: 0 },
-  { id: 'negotiation', label: 'Negotiation', icon: Bot, angle: 90 },
-  { id: 'ranking', label: 'Ranking', icon: ListOrdered, angle: 180 },
+  { id: 'concierge', label: 'Concierge', icon: MessageSquare, angle: -90, color: '#0070f3', glowClass: 'node-glow-blue' },
+  { id: 'matching', label: 'Matching', icon: Search, angle: 0, color: '#7928ca', glowClass: 'node-glow-purple' },
+  { id: 'negotiation', label: 'Negotiation', icon: Bot, angle: 90, color: '#ff0080', glowClass: 'node-glow-pink' },
+  { id: 'ranking', label: 'Ranking', icon: ListOrdered, angle: 180, color: '#79ffe1', glowClass: 'node-glow-cyan' },
 ];
 
 type AgentStatus = 'idle' | 'active' | 'done';
@@ -82,7 +82,6 @@ export function AgentMatchingPage() {
     return () => timers.forEach(clearTimeout);
   }, [navigate]);
 
-  // Auto-scroll log
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [currentStep]);
@@ -133,7 +132,7 @@ export function AgentMatchingPage() {
       {/* Main: ring visualization + log */}
       <main className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
         {/* Left: Agent ring */}
-        <div className="flex-1 relative flex items-center justify-center p-6 min-h-[400px]">
+        <div className="flex-1 relative flex items-center justify-center p-6 min-h-[420px]">
           {/* Background grid */}
           <div
             className="absolute inset-0 opacity-[0.03]"
@@ -144,7 +143,7 @@ export function AgentMatchingPage() {
           />
 
           <div className="relative">
-            {/* Center node */}
+            {/* Center orchestrator node */}
             <div className="relative z-10 size-20 rounded-full border-2 border-primary bg-primary/20 shadow-lg shadow-primary/20 flex flex-col items-center justify-center gap-1">
               <Sparkles className="size-6 text-primary" />
               <span className="text-[8px] font-bold text-foreground tracking-wider">ORCHESTRATOR</span>
@@ -158,14 +157,16 @@ export function AgentMatchingPage() {
               }}
             />
 
-            {/* 4 agent nodes: Concierge, Matching, Negotiation, Ranking */}
+            {/* 4 agent nodes */}
             {SYSTEM_AGENTS.map((agent) => {
               const status = agentStatuses[agent.id];
               const rad = (agent.angle * Math.PI) / 180;
-              const radius = 130;
+              const radius = 140;
               const x = Math.cos(rad) * radius;
               const y = Math.sin(rad) * radius;
               const Icon = agent.icon;
+              const isActive = status === 'active';
+              const isDone = status === 'done';
 
               return (
                 <div key={agent.id}>
@@ -181,50 +182,50 @@ export function AgentMatchingPage() {
                       y1={radius + 40}
                       x2={radius + 40 + x}
                       y2={radius + 40 + y}
-                      stroke={
-                        status === 'done'
-                          ? 'var(--success)'
-                          : status === 'active'
-                          ? '#a3a3a3'
-                          : '#404040'
-                      }
-                      strokeWidth={status === 'active' ? 2 : 1}
-                      strokeDasharray={status === 'done' ? 'none' : '4 6'}
+                      stroke={isDone ? 'var(--success)' : isActive ? agent.color : '#404040'}
+                      strokeWidth={isActive ? 2 : 1}
+                      strokeDasharray={isDone ? 'none' : '4 6'}
                       opacity={status === 'idle' ? 0.3 : 0.7}
-                      className={status === 'active' ? 'animate-[dash_1s_linear_infinite]' : ''}
                     />
                   </svg>
 
                   {/* Node */}
                   <div
                     className={cn(
-                      'absolute z-10 flex flex-col items-center gap-1 transition-all duration-500',
+                      'absolute z-10 flex flex-col items-center gap-1.5 transition-all duration-500',
                       status === 'idle' ? 'opacity-40' : 'opacity-100'
                     )}
                     style={{
-                      top: `calc(50% + ${y}px - 20px)`,
-                      left: `calc(50% + ${x}px - 20px)`,
+                      top: `calc(50% + ${y}px - 22px)`,
+                      left: `calc(50% + ${x}px - 22px)`,
                     }}
                   >
                     <div
                       className={cn(
-                        'size-10 rounded-full border-2 flex items-center justify-center transition-all duration-500',
-                        status === 'done'
-                          ? 'border-[var(--success)] bg-[var(--success-muted)]'
-                          : status === 'active'
-                          ? 'border-primary bg-primary/15 shadow-md shadow-primary/25'
-                          : 'border-border/50 bg-card/50'
+                        'size-11 rounded-full border-2 flex items-center justify-center transition-all duration-500',
                       )}
+                      style={{
+                        borderColor: isDone ? 'var(--success)' : isActive ? agent.color : '#333',
+                        background: isDone
+                          ? 'rgba(80,227,194,0.1)'
+                          : isActive
+                          ? `${agent.color}15`
+                          : 'rgba(10,10,10,0.5)',
+                        boxShadow: isActive ? `0 0 20px ${agent.color}40` : isDone ? '0 0 15px rgba(80,227,194,0.3)' : 'none',
+                      }}
                     >
-                      {status === 'done' ? (
+                      {isDone ? (
                         <CheckCircle2 className="size-4 text-[var(--success)]" />
-                      ) : status === 'active' ? (
-                        <Loader2 className="size-4 text-primary animate-spin" />
+                      ) : isActive ? (
+                        <Loader2 className="size-4 animate-spin" style={{ color: agent.color }} />
                       ) : (
-                        <Icon className="size-4 text-muted-foreground" />
+                        <Icon className="size-4 text-muted-foreground/50" />
                       )}
                     </div>
-                    <span className="text-[9px] font-semibold text-muted-foreground text-center leading-tight">
+                    <span
+                      className="text-[9px] font-semibold text-center leading-tight"
+                      style={{ color: isActive ? agent.color : isDone ? 'var(--success)' : '#555' }}
+                    >
                       {agent.label}
                     </span>
                   </div>
@@ -252,6 +253,7 @@ export function AgentMatchingPage() {
                 if (step.status === 'pending') return null;
                 const isActive = step.status === 'active';
                 const isDone = step.status === 'done';
+                const agent = SYSTEM_AGENTS.find((a) => a.id === step.id);
 
                 return (
                   <div
@@ -263,7 +265,7 @@ export function AgentMatchingPage() {
                   >
                     <div className="flex-shrink-0 mt-0.5">
                       {isActive ? (
-                        <Loader2 className="size-4 text-primary animate-spin" />
+                        <Loader2 className="size-4 animate-spin" style={{ color: agent?.color ?? '#0070f3' }} />
                       ) : isDone ? (
                         <CheckCircle2 className="size-4 text-[var(--success)]" />
                       ) : (
@@ -291,10 +293,6 @@ export function AgentMatchingPage() {
           </ScrollArea>
         </div>
       </main>
-
-      <style>{`
-        @keyframes dash { to { stroke-dashoffset: -12; } }
-      `}</style>
     </div>
   );
 }

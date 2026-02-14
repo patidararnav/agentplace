@@ -122,8 +122,24 @@ export function PromptPage() {
       <main className="flex-1 flex flex-col items-center justify-center px-6 pb-16">
         <div className="w-full max-w-xl space-y-8">
           <div className="space-y-2 text-center">
-            <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-foreground">
-              What do you need done?
+            <style>{`
+              @keyframes orangeShift {
+                0% { background-position: 0% 50%; }
+                50% { background-position: 100% 50%; }
+                100% { background-position: 0% 50%; }
+              }
+              .gradient-heading-animated {
+                background: linear-gradient(270deg, #ff6a00, #ff9f43, #f59e0b, #ffbe76, #ff4757, #ff6348, #ff6a00) !important;
+                background-size: 300% 300% !important;
+                -webkit-background-clip: text !important;
+                -webkit-text-fill-color: transparent !important;
+                background-clip: text !important;
+                color: transparent !important;
+                animation: orangeShift 5s ease infinite !important;
+              }
+            `}</style>
+            <h1 className="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight leading-[1.1]">
+              <span className="gradient-heading-animated">What do you need done?</span>
             </h1>
             <p className="text-muted-foreground text-base">
               Describe the job in plain English. Your agent will find vendors, negotiate the best price, and book it.
