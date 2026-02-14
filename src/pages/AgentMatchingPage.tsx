@@ -144,9 +144,9 @@ export function AgentMatchingPage() {
 
           <div className="relative">
             {/* Center orchestrator node */}
-            <div className="relative z-10 size-20 rounded-full border-2 border-primary bg-primary/20 shadow-lg shadow-primary/20 flex flex-col items-center justify-center gap-1">
-              <Sparkles className="size-6 text-primary" />
-              <span className="text-[8px] font-bold text-foreground tracking-wider">ORCHESTRATOR</span>
+            <div className="relative z-10 size-28 rounded-full border-2 border-primary bg-primary/20 shadow-lg shadow-primary/20 flex flex-col items-center justify-center gap-1.5">
+              <Sparkles className="size-7 text-primary" />
+              <span className="text-[10px] font-bold text-foreground tracking-wider">ORCHESTRATOR</span>
             </div>
 
             {/* Glow */}

@@ -156,17 +156,36 @@ export function PromptPage() {
               autoFocus
             />
 
-            <div className="flex flex-wrap gap-2">
-              {SUGGESTIONS.map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  onClick={() => setPrompt(s)}
-                  className="text-xs text-muted-foreground bg-muted/60 hover:bg-muted hover:text-foreground rounded-full px-3 py-1.5 transition-colors"
-                >
-                  {s}
-                </button>
-              ))}
+            <div className="relative -mx-6 overflow-hidden">
+              <style>{`
+                @keyframes marquee {
+                  0% { transform: translateX(0); }
+                  100% { transform: translateX(-50%); }
+                }
+                .marquee-track {
+                  animation: marquee 20s linear infinite;
+                }
+                .marquee-track:hover {
+                  animation-play-state: paused;
+                }
+              `}</style>
+              {/* Left fade */}
+              <div className="pointer-events-none absolute left-0 top-0 bottom-0 w-12 z-10 bg-gradient-to-r from-background to-transparent" />
+              {/* Right fade */}
+              <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-12 z-10 bg-gradient-to-l from-background to-transparent" />
+              <div className="marquee-track flex gap-3 w-max px-6">
+                {/* Duplicate suggestions for seamless loop */}
+                {[...SUGGESTIONS, ...SUGGESTIONS].map((s, i) => (
+                  <button
+                    key={`${s}-${i}`}
+                    type="button"
+                    onClick={() => setPrompt(s)}
+                    className="shrink-0 text-xs text-muted-foreground bg-muted/60 hover:bg-muted hover:text-foreground rounded-full px-3 py-1.5 transition-colors whitespace-nowrap"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <Button
