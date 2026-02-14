@@ -74,6 +74,6 @@ export interface AgentStep {
   label: string;
   detail: string;
   status: 'pending' | 'active' | 'done';
-  agentType?: 'customer' | 'vendor';
+  agentType?: 'customer' | 'vendor' | 'system';
   vendorName?: string;
 }
