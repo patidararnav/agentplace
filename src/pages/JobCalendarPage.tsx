@@ -6,8 +6,7 @@ import type { PlannedJob } from '@/types';
 import type { JobData } from '@/types';
 import { Button } from '@/components/ui/button';
 import { useApp } from '@/context/AppContext';
-import { fetchJobsForConsumer, updateJobStatus } from '@/lib/supabase-data';
-import type { JobStatus } from '@/types';
+import { fetchJobsForConsumer } from '@/lib/supabase-data';
 import { cn } from '@/lib/utils';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -107,16 +106,8 @@ export function JobCalendarPage() {
     }
   }
 
-  async function handleStatusChange(jobId: string, newStatus: JobStatus) {
-    const result = await updateJobStatus(Number(jobId), newStatus);
-    if (result.ok) {
-      setCalendarJobs((prev) =>
-        prev.map((j) => (j.job_id === Number(jobId) ? { ...j, status: newStatus } : j))
-      );
-      setSelectedJob((prev) =>
-        prev && prev.id === jobId ? { ...prev, status: newStatus } : prev
-      );
-    }
+  async   function handleTrackJob(job: PlannedJob) {
+    navigate('/customer/tracking', { state: { job, fromCalendar: true } });
   }
 
   if (!selectedConsumer) {
@@ -272,7 +263,7 @@ export function JobCalendarPage() {
         <JobDetailModal
           job={selectedJob}
           onClose={() => setSelectedJob(null)}
-          onStatusChange={handleStatusChange}
+          onTrackJob={handleTrackJob}
         />
       )}
     </div>

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Sparkles, CheckCircle2, Circle, Clock, CreditCard,
   Star, ArrowLeft, MapPin, Camera, ShieldCheck, Loader2,
@@ -9,34 +9,81 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Textarea } from '@/components/ui/textarea';
-import { mockFulfillmentSteps } from '@/data/mock';
+import { updateJobStatus } from '@/lib/supabase-data';
+import type { PlannedJob } from '@/types';
 import { cn } from '@/lib/utils';
+
+/* Fulfillment steps; order matches progression. Steps 0..4 = pre-completion; 5 = completed; 6 = payment; 7 = review. */
+const FULFILLMENT_STEPS = [
+  { id: 'booked', label: 'Job Booked', detail: 'Escrow payment secured' },
+  { id: 'confirmed', label: 'Vendor Confirmed', detail: 'Vendor confirmed time' },
+  { id: 'en-route', label: 'Vendor En Route', detail: 'On the way' },
+  { id: 'arrived', label: 'Vendor Arrived', detail: 'On-site. Work starting.' },
+  { id: 'in-progress', label: 'Work In Progress', detail: 'Job in progress' },
+  { id: 'completed', label: 'Job Completed', detail: 'Work done. Confirm completion.' },
+  { id: 'payment', label: 'Payment Released', detail: 'Escrow released to vendor' },
+  { id: 'review', label: 'Leave a Review', detail: 'Rate your experience' },
+];
+
+/** Number of steps (by index) that are done from DB status alone: 5→1, 6→5, 7→6, 8→7, 9→8 */
+function stepsDoneFromStatus(status: number | undefined): number {
+  if (status == null || status < 5) return 0;
+  const map: Record<number, number> = { 5: 1, 6: 5, 7: 6, 8: 7, 9: 8 };
+  return map[status] ?? 0;
+}
 
 export function FulfillmentPage() {
   const navigate = useNavigate();
-  const [confirmed, setConfirmed] = useState(false);
-  const [paymentReleased, setPaymentReleased] = useState(false);
+  const location = useLocation();
+  const stateJob = (location.state as { job?: PlannedJob; fromCalendar?: boolean } | null)?.job;
+  const fromCalendar = (location.state as { fromCalendar?: boolean } | null)?.fromCalendar ?? false;
+
+  const job: PlannedJob | null = stateJob ?? null;
+
+  const [confirmed, setConfirmed] = useState(() => (job?.status != null && job.status >= 7));
+  const [paymentReleased, setPaymentReleased] = useState(() => (job?.status != null && job.status >= 8));
   const [reviewOpen, setReviewOpen] = useState(false);
   const [rating, setRating] = useState(0);
   const [reviewText, setReviewText] = useState('');
-  const [reviewSubmitted, setReviewSubmitted] = useState(false);
+  const [reviewSubmitted, setReviewSubmitted] = useState(() => (job?.status != null && job.status >= 9));
+
+  const stepsDoneByStatus = job?.status != null ? stepsDoneFromStatus(job.status) : (job === null ? 5 : 0);
+
+  const handleBack = () => {
+    if (fromCalendar) navigate('/customer/calendar');
+    else navigate('/customer/results');
+  };
 
   const handleConfirmCompletion = () => {
     setConfirmed(true);
+    if (job?.id) updateJobStatus(Number(job.id), 7);
     setTimeout(() => setPaymentReleased(true), 1500);
+  };
+
+  const handlePaymentReleased = () => {
+    if (job?.id) updateJobStatus(Number(job.id), 8);
   };
 
   const handleSubmitReview = () => {
     setReviewSubmitted(true);
-    setTimeout(() => navigate('/'), 2000);
+    if (job?.id) updateJobStatus(Number(job.id), 9);
+    setTimeout(() => navigate(fromCalendar ? '/customer/calendar' : '/'), 2000);
   };
+
+  const displayTitle = job?.jobType ?? 'Kitchen sink repair';
+  const displayVendor = job?.vendorName ?? 'QuickFix Plumbing';
+  const displayPrice = job?.price ?? 285;
+  const displayDate = job?.dateTime
+    ? new Date(job.dateTime).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : 'Tue Feb 18, 9:00 AM';
+  const displayDuration = job?.durationMinutes ?? 90;
 
   return (
     <div className="min-h-svh bg-background flex flex-col">
       {/* Header */}
       <header className="px-6 py-4 flex-shrink-0 border-b border-border/40">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" className="size-8" onClick={() => navigate('/customer/results')}>
+          <Button variant="ghost" size="icon" className="size-8" onClick={handleBack}>
             <ArrowLeft className="size-4" />
           </Button>
           <div className="size-8 rounded-lg bg-primary flex items-center justify-center">
@@ -44,7 +91,7 @@ export function FulfillmentPage() {
           </div>
           <div>
             <h1 className="text-base font-semibold text-foreground">Job Tracking</h1>
-            <p className="text-xs text-muted-foreground">QuickFix Plumbing · Kitchen sink repair</p>
+            <p className="text-xs text-muted-foreground">{displayVendor} · {displayTitle}</p>
           </div>
         </div>
       </header>
@@ -56,11 +103,11 @@ export function FulfillmentPage() {
             <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="font-semibold text-foreground">Kitchen Sink Repair</h3>
-                  <p className="text-sm text-muted-foreground">QuickFix Plumbing</p>
+                  <h3 className="font-semibold text-foreground">{displayTitle}</h3>
+                  <p className="text-sm text-muted-foreground">{displayVendor}</p>
                 </div>
                 <div className="text-right">
-                  <div className="text-2xl font-bold text-foreground">$285</div>
+                  <div className="text-2xl font-bold text-foreground">${displayPrice}</div>
                   <Badge variant="secondary" className="text-xs gap-1 mt-1">
                     <ShieldCheck className="size-3" />
                     Escrow held
@@ -71,7 +118,7 @@ export function FulfillmentPage() {
               <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
                 <span className="flex items-center gap-1.5">
                   <Clock className="size-3.5" />
-                  Tue Feb 18, 9:00 AM
+                  {displayDate}
                 </span>
                 <span className="flex items-center gap-1.5">
                   <MapPin className="size-3.5" />
@@ -79,7 +126,7 @@ export function FulfillmentPage() {
                 </span>
                 <span className="flex items-center gap-1.5">
                   <Clock className="size-3.5" />
-                  90 min estimated
+                  {displayDuration} min estimated
                 </span>
               </div>
             </CardContent>
@@ -92,14 +139,19 @@ export function FulfillmentPage() {
               Fulfillment Agent — Live Tracking
             </h2>
 
-            {mockFulfillmentSteps.map((step, idx) => {
-              const isDone = step.done || (step.id === 'completed' && confirmed) || (step.id === 'payment' && paymentReleased) || (step.id === 'review' && reviewSubmitted);
+            {FULFILLMENT_STEPS.map((step, idx) => {
+              const doneFromStatus = idx < stepsDoneByStatus;
+              const isDone =
+                doneFromStatus ||
+                (step.id === 'completed' && (job?.status != null && job.status >= 7 || confirmed)) ||
+                (step.id === 'payment' && (job?.status != null && job.status >= 8 || paymentReleased)) ||
+                (step.id === 'review' && (job?.status != null && job.status >= 9 || reviewSubmitted));
               const isActive = !isDone && (
-                (step.id === 'completed' && !confirmed) ||
+                (step.id === 'completed' && !confirmed && stepsDoneByStatus >= 5 && (job?.status == null || job.status <= 6)) ||
                 (step.id === 'payment' && confirmed && !paymentReleased) ||
                 (step.id === 'review' && paymentReleased && !reviewSubmitted)
               );
-              const isLast = idx === mockFulfillmentSteps.length - 1;
+              const isLast = idx === FULFILLMENT_STEPS.length - 1;
 
               return (
                 <div key={step.id} className="flex gap-4">
@@ -109,14 +161,14 @@ export function FulfillmentPage() {
                       className={cn(
                         'size-7 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-all duration-500',
                         isDone
-                          ? 'border-primary bg-primary/20'
+                          ? 'border-[var(--success)] bg-[var(--success-muted)]'
                           : isActive
                           ? 'border-primary bg-primary/15'
                           : 'border-border bg-card'
                       )}
                     >
                       {isDone ? (
-                        <CheckCircle2 className="size-4 text-primary" />
+                        <CheckCircle2 className="size-4 text-[var(--success)]" />
                       ) : isActive ? (
                         <Loader2 className="size-3.5 text-primary animate-spin" />
                       ) : (
@@ -127,7 +179,7 @@ export function FulfillmentPage() {
                       <div
                         className={cn(
                           'w-px flex-1 min-h-[24px]',
-                          isDone ? 'bg-primary/30' : 'bg-border/40'
+                          isDone ? 'bg-[var(--success)]/20' : 'bg-border/40'
                         )}
                       />
                     )}
@@ -144,14 +196,9 @@ export function FulfillmentPage() {
                       {step.label}
                     </p>
                     <p className="text-xs text-muted-foreground/70 mt-0.5">{step.detail}</p>
-                    {step.time && isDone && (
-                      <p className="text-[10px] text-muted-foreground/50 mt-1 font-mono">
-                        {new Date(step.time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
-                      </p>
-                    )}
 
                     {/* Completion confirmation button */}
-                    {step.id === 'completed' && !confirmed && (
+                    {step.id === 'completed' && !confirmed && stepsDoneByStatus >= 5 && (job?.status == null || job.status <= 6) && (
                       <div className="mt-3 space-y-2">
                         <div className="flex items-center gap-2 text-xs text-muted-foreground">
                           <Camera className="size-3.5" />
@@ -172,9 +219,9 @@ export function FulfillmentPage() {
                       </div>
                     )}
                     {step.id === 'payment' && paymentReleased && (
-                      <div className="mt-2 flex items-center gap-2 text-xs text-primary">
+                      <div className="mt-2 flex items-center gap-2 text-xs text-[var(--success)]">
                         <CreditCard className="size-3.5" />
-                        $285 released to QuickFix Plumbing
+                        {`$${displayPrice} released to ${displayVendor}`}
                       </div>
                     )}
 
@@ -202,7 +249,7 @@ export function FulfillmentPage() {
               <CardContent className="p-5 space-y-4">
                 <h3 className="font-semibold text-foreground flex items-center gap-2">
                   <Star className="size-4 text-primary" />
-                  Rate QuickFix Plumbing
+                  Rate {displayVendor}
                 </h3>
 
                 {/* Star rating */}
@@ -247,9 +294,9 @@ export function FulfillmentPage() {
 
           {/* Review submitted */}
           {reviewSubmitted && (
-            <Card className="border-primary/30">
+            <Card className="border-[var(--success)]/30">
               <CardContent className="p-5 text-center space-y-2">
-                <CheckCircle2 className="size-10 text-primary mx-auto" />
+                <CheckCircle2 className="size-10 text-[var(--success)] mx-auto" />
                 <h3 className="font-semibold text-foreground">Review submitted!</h3>
                 <p className="text-sm text-muted-foreground">
                   Reputation Agent updated vendor score. Redirecting...

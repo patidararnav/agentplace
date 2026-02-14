@@ -116,7 +116,7 @@ export function AgentMatchingPage() {
               </>
             ) : (
               <>
-                <CheckCircle2 className="size-3 text-primary" />
+                <CheckCircle2 className="size-3 text-[var(--success)]" />
                 Done
               </>
             )}
@@ -183,7 +183,7 @@ export function AgentMatchingPage() {
                       y2={radius + 40 + y}
                       stroke={
                         status === 'done'
-                          ? '#fafafa'
+                          ? 'var(--success)'
                           : status === 'active'
                           ? '#a3a3a3'
                           : '#404040'
@@ -210,14 +210,14 @@ export function AgentMatchingPage() {
                       className={cn(
                         'size-10 rounded-full border-2 flex items-center justify-center transition-all duration-500',
                         status === 'done'
-                          ? 'border-primary bg-primary/20'
+                          ? 'border-[var(--success)] bg-[var(--success-muted)]'
                           : status === 'active'
                           ? 'border-primary bg-primary/15 shadow-md shadow-primary/25'
                           : 'border-border/50 bg-card/50'
                       )}
                     >
                       {status === 'done' ? (
-                        <CheckCircle2 className="size-4 text-primary" />
+                        <CheckCircle2 className="size-4 text-[var(--success)]" />
                       ) : status === 'active' ? (
                         <Loader2 className="size-4 text-primary animate-spin" />
                       ) : (
@@ -237,7 +237,7 @@ export function AgentMatchingPage() {
         {/* Right: Activity log */}
         <div className="lg:w-[420px] border-t lg:border-t-0 lg:border-l border-border/40 flex flex-col bg-card/30">
           <div className="px-4 py-3 border-b border-border/40 flex items-center gap-2">
-            <div className="size-2 rounded-full bg-primary animate-pulse" />
+            <div className="size-2 rounded-full bg-[var(--success)] animate-pulse" />
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               Agent Activity Log
             </span>
@@ -265,7 +265,7 @@ export function AgentMatchingPage() {
                       {isActive ? (
                         <Loader2 className="size-4 text-primary animate-spin" />
                       ) : isDone ? (
-                        <CheckCircle2 className="size-4 text-primary" />
+                        <CheckCircle2 className="size-4 text-[var(--success)]" />
                       ) : (
                         <Circle className="size-4 text-muted-foreground" />
                       )}

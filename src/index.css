@@ -48,6 +48,7 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-success: var(--success);
 }
 
 /* Agent Place — black & white with gradients */
@@ -94,6 +95,10 @@
   --gradient-bg: linear-gradient(180deg, #0a0a0a 0%, #0f0f0f 50%, #141414 100%);
   --gradient-card: linear-gradient(180deg, #171717 0%, #141414 100%);
   --gradient-subtle: linear-gradient(135deg, #1a1a1a 0%, #262626 100%);
+
+  /* Subtle accent: positive/savings/success (keeps modern b&w feel) */
+  --success: #34d399;
+  --success-muted: rgba(52, 211, 153, 0.15);
 }
 
 .dark {
@@ -128,6 +133,8 @@
   --sidebar-accent-foreground: #fafafa;
   --sidebar-border: #262626;
   --sidebar-ring: #525252;
+  --success: #34d399;
+  --success-muted: rgba(52, 211, 153, 0.15);
 }
 
 @layer base {

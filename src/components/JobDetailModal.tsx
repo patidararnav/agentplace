@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import type { PlannedJob, JobStatus } from '@/types';
 import {
   Dialog,
@@ -7,14 +6,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Calendar, Clock, DollarSign, Wrench, User, ListOrdered, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Calendar, Clock, DollarSign, Wrench, User, ListOrdered, ExternalLink } from 'lucide-react';
 
 const JOB_STATUS_LABELS: Record<JobStatus, string> = {
   1: 'Concierge',
@@ -28,13 +21,11 @@ const JOB_STATUS_LABELS: Record<JobStatus, string> = {
   9: 'Payment received',
 };
 
-const JOB_STATUS_VALUES: JobStatus[] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-
 interface JobDetailModalProps {
   job: PlannedJob;
   onClose: () => void;
-  /** When provided, shows a status dropdown so the user can update the job status (e.g. on consumer calendar). */
-  onStatusChange?: (jobId: string, newStatus: JobStatus) => void | Promise<void>;
+  /** When provided, shows a "Track job" button that opens the fulfillment/tracking screen for this job. */
+  onTrackJob?: (job: PlannedJob) => void;
 }
 
 function formatDate(s: string) {
@@ -48,21 +39,7 @@ function formatDate(s: string) {
   });
 }
 
-export function JobDetailModal({ job, onClose, onStatusChange }: JobDetailModalProps) {
-  const [updatingStatus, setUpdatingStatus] = useState(false);
-  const currentStatus = job.status ?? 1;
-
-  async function handleStatusChange(value: string) {
-    const newStatus = Number(value) as JobStatus;
-    if (!onStatusChange) return;
-    setUpdatingStatus(true);
-    try {
-      await onStatusChange(job.id, newStatus);
-    } finally {
-      setUpdatingStatus(false);
-    }
-  }
-
+export function JobDetailModal({ job, onClose, onTrackJob }: JobDetailModalProps) {
   return (
     <Dialog open onOpenChange={onClose}>
       <DialogContent className="sm:max-w-md bg-card border-border p-0">
@@ -94,37 +71,28 @@ export function JobDetailModal({ job, onClose, onStatusChange }: JobDetailModalP
             <ListOrdered className="size-4 text-muted-foreground shrink-0" />
             <div className="flex-1 min-w-0 space-y-1">
               <p className="text-xs text-muted-foreground">Status</p>
-              {onStatusChange ? (
-                <div className="flex items-center gap-2">
-                  <Select
-                    value={String(currentStatus)}
-                    onValueChange={handleStatusChange}
-                    disabled={updatingStatus}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue>
-                        {JOB_STATUS_LABELS[currentStatus as JobStatus] ?? `Status ${currentStatus}`}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {JOB_STATUS_VALUES.map((s) => (
-                        <SelectItem key={s} value={String(s)}>
-                          {JOB_STATUS_LABELS[s]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {updatingStatus && (
-                    <Loader2 className="size-4 animate-spin text-muted-foreground shrink-0" />
-                  )}
-                </div>
-              ) : (
-                <p className="text-sm font-medium text-foreground">
-                  {JOB_STATUS_LABELS[job.status as JobStatus] ?? (job.status != null ? `Status ${job.status}` : '—')}
-                </p>
-              )}
+              <p className="text-sm font-medium text-foreground">
+                {JOB_STATUS_LABELS[job.status as JobStatus] ?? (job.status != null ? `Status ${job.status}` : '—')}
+              </p>
             </div>
           </div>
+
+          {onTrackJob && (
+            <>
+              <Separator className="bg-border/50" />
+              <Button
+                className="w-full gap-2"
+                variant="secondary"
+                onClick={() => {
+                  onTrackJob(job);
+                  onClose();
+                }}
+              >
+                <ExternalLink className="size-4" />
+                Track job &amp; update status
+              </Button>
+            </>
+          )}
 
           <Separator className="bg-border/50" />
 

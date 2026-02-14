@@ -124,7 +124,7 @@ export function JobResponsePage() {
                             )}
                             <Badge
                               variant="secondary"
-                              className="text-xs gap-1 text-black"
+                              className="text-xs gap-1 text-[var(--success)] bg-[var(--success-muted)] border-[var(--success)]/30"
                             >
                               <TrendingDown className="size-3" />
                               {savings}% off
@@ -215,8 +215,8 @@ export function JobResponsePage() {
           <DialogContent className="sm:max-w-md bg-card border-border">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-lg">
-                <span className="flex size-9 items-center justify-center rounded-full bg-primary/20">
-                  <Check className="size-5 text-primary" />
+                <span className="flex size-9 items-center justify-center rounded-full bg-[var(--success-muted)]">
+                  <Check className="size-5 text-[var(--success)]" />
                 </span>
                 Job booked
               </DialogTitle>
