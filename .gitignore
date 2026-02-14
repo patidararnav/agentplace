@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 .env
 private_keys.json
+node_modules
