@@ -88,7 +88,10 @@ export function AgentMatchingPage() {
       hasNavigated.current = true;
 
       const quotes = buildQuotes(negotiation.vendorResults, negotiation.vendors);
-      const totalVendors = Object.keys(negotiation.vendors).length;
+      const totalVendors = Math.max(
+        Object.keys(negotiation.vendors).length,
+        negotiation.vendorResults.length,
+      );
       const deals = quotes.length;
       const avgSavings = deals > 0
         ? Math.round(quotes.reduce((acc, q) => acc + ((q.originalPrice - q.price) / q.originalPrice) * 100, 0) / deals)

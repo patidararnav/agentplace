@@ -320,6 +320,23 @@ export function useNegotiation(params: NegotiateParams | null) {
                   negotiation: 'done',
                   ranking: 'done',
                 };
+
+                // Merge vendor_results from the done event so we always
+                // have them even if earlier vendor_result WS events were
+                // missed or arrived out of order.
+                if (e.vendor_results && e.vendor_results.length > 0) {
+                  const existing = new Set(
+                    prev.vendorResults.map((v) => v.vendor_address),
+                  );
+                  const merged = [...prev.vendorResults];
+                  for (const vr of e.vendor_results) {
+                    if (!existing.has(vr.vendor_address)) {
+                      merged.push(vr);
+                    }
+                  }
+                  next.vendorResults = merged;
+                }
+
                 next.logs = [
                   ...prev.logs,
                   makeLogEntry(
@@ -353,10 +370,35 @@ export function useNegotiation(params: NegotiateParams | null) {
 
         ws.onclose = () => {
           if (!cancelled) {
-            setState((prev) => ({
-              ...prev,
-              isComplete: prev.isComplete || true,
-            }));
+            setState((prev) => {
+              // If we already received a done event, nothing to do.
+              if (prev.isComplete) return prev;
+
+              // WebSocket closed before done event — synthesize completion
+              // from whatever vendor results we already have.
+              const hasResults = prev.vendorResults.length > 0;
+              return {
+                ...prev,
+                isComplete: true,
+                outcome: prev.outcome ?? {
+                  type: 'done' as const,
+                  outcome: hasResults ? 'deal' : 'no_deal',
+                  outcome_text: hasResults
+                    ? 'Negotiation completed (connection closed).'
+                    : 'Connection closed before results arrived.',
+                  winner: '',
+                  winner_price: 0,
+                  vendor_results: prev.vendorResults,
+                  config: {},
+                },
+                stepStatuses: {
+                  concierge: 'done',
+                  matching: 'done',
+                  negotiation: 'done',
+                  ranking: 'done',
+                },
+              };
+            });
           }
         };
       } catch (err: unknown) {

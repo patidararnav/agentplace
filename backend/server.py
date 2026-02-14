@@ -73,7 +73,7 @@ log = logging.getLogger("server")
 
 ORCHESTRATOR_SEED = os.getenv("ORCHESTRATOR_SEED", "orchestrator_seed_treehacks_2026")
 ORCHESTRATOR_PORT = int(os.getenv("ORCHESTRATOR_PORT", "8001"))
-MAX_ROUNDS = int(os.getenv("MAX_NEGOTIATION_ROUNDS", "8"))
+MAX_ROUNDS = int(os.getenv("MAX_NEGOTIATION_ROUNDS", "5"))
 
 # Port range for ephemeral customer agents (one per session)
 _CUSTOMER_PORT_START = 9200
@@ -215,6 +215,80 @@ async def on_shutdown() -> None:
             await t
 
 
+def _task_belongs_to_agent(task: asyncio.Task, agent: Any) -> bool:
+    """
+    Return True when an asyncio task belongs to the given uAgents agent.
+
+    This lets us cancel only agent-owned background tasks during cleanup,
+    instead of canceling every task in uvicorn's shared event loop.
+    """
+    coro = task.get_coro()
+    frame = getattr(coro, "cr_frame", None)
+    if frame is None:
+        return False
+
+    locals_map = frame.f_locals
+    local_self = locals_map.get("self")
+    if local_self is agent:
+        return True
+
+    agent_components = {
+        component
+        for component in (
+            getattr(agent, "_server", None),
+            getattr(agent, "_mailbox_client", None),
+            getattr(agent, "_wallet_messaging_client", None),
+            getattr(agent, "_dispenser", None),
+        )
+        if component is not None
+    }
+    if local_self is not None and local_self in agent_components:
+        return True
+
+    # Interval tasks are spawned by uagents._run_interval(context_factory=agent._build_context, ...)
+    context_factory = locals_map.get("context_factory")
+    if getattr(context_factory, "__self__", None) is agent:
+        return True
+
+    return False
+
+
+async def _cancel_agent_tasks(agent: Any) -> None:
+    """Cancel outstanding asyncio tasks owned by a specific agent."""
+    current = asyncio.current_task()
+    to_cancel = [
+        t for t in asyncio.all_tasks()
+        if t is not current and not t.done() and _task_belongs_to_agent(t, agent)
+    ]
+    for t in to_cancel:
+        t.cancel()
+    if to_cancel:
+        await asyncio.gather(*to_cancel, return_exceptions=True)
+
+
+async def _run_agent_once(agent: Any) -> None:
+    """
+    Run one uAgents lifecycle safely on the shared uvicorn loop.
+
+    Mirrors uagents.Agent.run_async() without the problematic global
+    asyncio.all_tasks() cancellation.
+    """
+    agent.setup()
+
+    run_tasks: list[asyncio.Task] = []
+    if not (agent._use_mailbox and not agent._rest_handlers):
+        run_tasks.append(asyncio.create_task(agent.start_server()))
+    if agent._use_mailbox and agent._mailbox_client is not None:
+        run_tasks.append(asyncio.create_task(agent._mailbox_client.run()))
+
+    try:
+        await asyncio.gather(*run_tasks, return_exceptions=True)
+    finally:
+        with suppress(Exception):
+            await agent._shutdown()
+        await _cancel_agent_tasks(agent)
+
+
 async def _run_agent(agent, label: str) -> None:
     """Run a single agent's async loop, restarting on transient errors."""
     # Fix: ensure the agent's internal loop reference matches the *running* loop.
@@ -231,7 +305,10 @@ async def _run_agent(agent, label: str) -> None:
 
     while True:
         try:
-            await agent.run_async()
+            await _run_agent_once(agent)
+            # If the agent exits unexpectedly without cancellation, restart it.
+            log.warning("\033[33m[%s]\033[0m Agent exited unexpectedly — restarting in 1s", label)
+            await asyncio.sleep(1)
         except asyncio.CancelledError:
             log.info("\033[33m[%s]\033[0m Agent task cancelled", label)
             raise
@@ -352,11 +429,11 @@ async def run_negotiation(
     # ── Run the customer agent ──
     agent_task = asyncio.create_task(_run_agent(customer, f"customer-{session_id[:8]}"))
     try:
-        await asyncio.wait_for(finished.wait(), timeout=180)
+        await asyncio.wait_for(finished.wait(), timeout=90)
     except asyncio.TimeoutError:
         result["outcome"] = "timeout"
-        result["outcome_text"] = "Negotiation timed out after 180s."
-        log.warning("\033[33m[%s]\033[0m Timed out after 180s", session_id[:8])
+        result["outcome_text"] = "Negotiation timed out."
+        log.warning("\033[33m[%s]\033[0m Timed out after 90s", session_id[:8])
     finally:
         agent_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -374,8 +451,8 @@ async def run_negotiation(
 
     vendor_results = result.get("vendor_results", [])
     deals = sorted(
-        [v for v in vendor_results if v["outcome"] == "deal"],
-        key=lambda v: v["price"],
+        [v for v in vendor_results if v.get("outcome") == "deal"],
+        key=lambda v: v.get("price", 0),
     )
 
     log.info(
@@ -387,6 +464,11 @@ async def run_negotiation(
         result.get("winner_price", 0),
         len(deals), len(vendor_results),
     )
+
+    # Re-push vendor results so the frontend has them even if earlier
+    # vendor_result events were missed during the WebSocket stream.
+    for vr in vendor_results:
+        event_queue.put_nowait({"type": "vendor_result", **vr})
 
     event_queue.put_nowait({
         "type": "step", "step": "ranking", "status": "done",

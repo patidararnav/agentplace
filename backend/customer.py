@@ -11,6 +11,7 @@ Run standalone:  python customer.py   (reads config from .env)
 import asyncio
 import os
 import random
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -116,6 +117,8 @@ def create_customer_agent(
     counters: Dict[str, int] = {}
     deal_closed = False
     terminated = False
+    expected_vendors: List[int] = [0]       # mutable; set from "Matched N vendors" status
+    vendor_result_count: List[int] = [0]    # mutable; incremented on each vendor_result
 
     # ── LLM text generation ──
 
@@ -219,9 +222,15 @@ def create_customer_agent(
 
         # ── status ──
         if mt == "status":
-            ctx.logger.info("STATUS: %s", fields.get("TEXT", text))
-            _append("statuses", fields.get("TEXT", text))
-            _push_event({"type": "status", "text": fields.get("TEXT", text)})
+            txt = fields.get("TEXT", text)
+            ctx.logger.info("STATUS: %s", txt)
+            _append("statuses", txt)
+            _push_event({"type": "status", "text": txt})
+            # Parse expected vendor count: "Matched N vendors for ..."
+            m = re.search(r"Matched (\d+) vendors", txt)
+            if m:
+                expected_vendors[0] = int(m.group(1))
+                ctx.logger.info("Expected %d vendor results", expected_vendors[0])
             return
 
         # ── per-vendor result (consensus mode) ──
@@ -241,6 +250,30 @@ def create_customer_agent(
             }
             _append("vendor_results", vr)
             _push_event({"type": "vendor_result", **vr})
+
+            # ── Auto-finish when ALL vendors have reported ──
+            vendor_result_count[0] += 1
+            ctx.logger.info(
+                "Vendor results: %d / %d expected",
+                vendor_result_count[0], expected_vendors[0],
+            )
+            if expected_vendors[0] > 0 and vendor_result_count[0] >= expected_vendors[0]:
+                ctx.logger.info("All %d vendor results received — finishing", expected_vendors[0])
+                all_results = result_sink.get("vendor_results", []) if result_sink else []
+                deals = [r for r in all_results if r.get("outcome") == "deal"]
+                if deals:
+                    best = min(deals, key=lambda d: d.get("price", float("inf")))
+                    _record("outcome", "deal")
+                    _record(
+                        "outcome_text",
+                        f"Best deal: {best['vendor_name']} at ${best['price']}",
+                    )
+                    _record("winner", best["vendor_name"])
+                    _record("winner_price", best.get("price", 0))
+                else:
+                    _record("outcome", "no_deal")
+                    _record("outcome_text", "All vendors failed to reach agreement")
+                _finish()
             return
 
         # ── deal closed (final consensus or first-deal) ──
