@@ -139,3 +139,15 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Leaflet map must have explicit height to render */
+.leaflet-container {
+  height: 100% !important;
+  width: 100% !important;
+  z-index: 0;
+}
+
+.leaflet-div-icon.home-marker {
+  background: transparent !important;
+  border: none !important;
+}
