@@ -379,7 +379,22 @@ if __name__ == "__main__":
 
     load_dotenv()
 
+    # ── Optionally load consumer from Supabase by CONSUMER_NAME ──
+    _consumer_name = os.getenv("CONSUMER_NAME", "")
+    if _consumer_name:
+        try:
+            from db_helpers import load_consumer
+            _consumer = load_consumer(_consumer_name)
+            if _consumer:
+                print(f"[customer] Loaded consumer from Supabase: {_consumer_name}")
+                print(f"  job_count: {_consumer.get('job_count', 0)}")
+            else:
+                print(f"[customer] Consumer '{_consumer_name}' not found in Supabase")
+        except Exception as _e:
+            print(f"[customer] Supabase load skipped: {_e}")
+
     _agent = create_customer_agent(
+        name=_consumer_name or "customer",
         seed=os.getenv("CUSTOMER_SEED", "customer_seed_treehacks_2026"),
         service=os.getenv("JOB_TYPE", "leaky faucet").strip().lower(),
         budget=int(os.getenv("MAX_PRICE", "180")),

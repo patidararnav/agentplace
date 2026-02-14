@@ -5,3 +5,5 @@ openai
 fastapi
 uvicorn[standard]
 websockets
+supabase
+mcp[cli]

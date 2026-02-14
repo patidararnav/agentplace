@@ -281,14 +281,40 @@ if __name__ == "__main__":
 
     load_dotenv()
 
+    # ── Optionally load vendor profile from Supabase by VENDOR_ID ──
+    _vendor_id = os.getenv("VENDOR_ID", "")
+    _name = os.getenv("VENDOR_NAME", "LocalPlumbCo")
+    _services = services_from_csv(os.getenv("VENDOR_SERVICES", "plumbing,leaky faucet"))
+    _base_prices = _parse_base_prices(
+        os.getenv("VENDOR_BASE_PRICES", "plumbing:150,leaky faucet:180,septic tank:500")
+    )
+    _aggression = max(1, min(5, int(os.getenv("VENDOR_AGGRESSION", "2"))))
+
+    if _vendor_id.isdigit():
+        try:
+            from db_helpers import load_vendor, vendor_row_to_agent_config
+            _row = load_vendor(int(_vendor_id))
+            if _row:
+                _cfg = vendor_row_to_agent_config(_row)
+                _name = _cfg["name"]
+                _services = _cfg["services"]
+                _base_prices = _cfg["base_prices"]
+                _aggression = _cfg["aggression"]
+                print(f"[vendor] Loaded profile from Supabase: {_name} (id={_vendor_id})")
+                print(f"  services: {_services}")
+                print(f"  base_prices: {_base_prices}")
+                print(f"  aggression: {_aggression}")
+            else:
+                print(f"[vendor] Vendor ID {_vendor_id} not found in Supabase, using .env defaults")
+        except Exception as _e:
+            print(f"[vendor] Supabase load skipped: {_e}")
+
     _agent = create_vendor_agent(
-        name=os.getenv("VENDOR_NAME", "LocalPlumbCo"),
+        name=_name,
         seed=os.getenv("VENDOR_SEED", "vendor_seed_treehacks_2026"),
-        services=services_from_csv(os.getenv("VENDOR_SERVICES", "plumbing,leaky faucet")),
-        base_prices=_parse_base_prices(
-            os.getenv("VENDOR_BASE_PRICES", "plumbing:150,leaky faucet:180,septic tank:500")
-        ),
-        aggression=max(1, min(5, int(os.getenv("VENDOR_AGGRESSION", "2")))),
+        services=_services,
+        base_prices=_base_prices,
+        aggression=_aggression,
         orchestrator_address=os.getenv(
             "ORCHESTRATOR_ADDRESS",
             "agent1q0sewr2pg82xzuqzvj98usjdtc9zyrdlrgpsqh0gp4uw4cvh3ujp7452dwu",

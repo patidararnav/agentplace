@@ -75,6 +75,52 @@ def load_config(path: Path) -> Dict[str, Any]:
     }
 
 
+def load_config_from_supabase(
+    service_type: str = "plumbing",
+    budget: int = 200,
+    urgency: int = 3,
+    aggression: int = 3,
+    consumer_name: str = "SimCustomer",
+    notes: str = "Need someone reliable and quick.",
+    max_rounds: int = 8,
+) -> Dict[str, Any]:
+    """Build a simulation config by loading real vendors from Supabase."""
+    from db_helpers import load_vendors_for_service, vendor_row_to_agent_config
+
+    rows = load_vendors_for_service(service_type)
+    if not rows:
+        raise ValueError(f"No vendors found in Supabase for service '{service_type}'")
+
+    vendors: List[Dict[str, Any]] = []
+    for i, row in enumerate(rows):
+        cfg = vendor_row_to_agent_config(row)
+        vendors.append({
+            "name": cfg["name"],
+            "seed": f"vendor_sim_supabase_{cfg['vendor_id']}_{i}",
+            "services": cfg["services"],
+            "base_prices": cfg["base_prices"],
+            "aggression": cfg["aggression"],
+        })
+
+    log.info("Loaded %d vendors from Supabase for '%s'", len(vendors), service_type)
+    return {
+        "bureau_port": 8100,
+        "max_rounds": max_rounds,
+        "startup_delay": 3.0,
+        "timeout_seconds": 90,
+        "customer": {
+            "name": consumer_name,
+            "seed": f"customer_sim_supabase_{consumer_name}",
+            "service": service_type,
+            "budget": budget,
+            "urgency": urgency,
+            "aggression": aggression,
+            "notes": notes,
+        },
+        "vendors": vendors,
+    }
+
+
 # ─── Simulation Runner ───────────────────────────────────────────────────
 
 
@@ -240,6 +286,18 @@ def parse_args() -> argparse.Namespace:
         help="Path to JSON config file.",
     )
     parser.add_argument(
+        "--supabase", action="store_true",
+        help="Load vendors from Supabase instead of JSON config.",
+    )
+    parser.add_argument(
+        "--service", default="plumbing",
+        help="Service type when using --supabase (default: plumbing).",
+    )
+    parser.add_argument(
+        "--budget", type=int, default=200,
+        help="Customer budget when using --supabase (default: 200).",
+    )
+    parser.add_argument(
         "--timeout-seconds", type=int, default=None,
         help="Hard timeout in seconds (overrides config value).",
     )
@@ -251,13 +309,30 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    from dotenv import load_dotenv
+    load_dotenv()
+
     args = parse_args()
-    result = asyncio.run(
-        run_simulation(
-            config_path=Path(args.config),
-            timeout_seconds=args.timeout_seconds,
+
+    if args.supabase:
+        cfg = load_config_from_supabase(
+            service_type=args.service,
+            budget=args.budget,
         )
-    )
+        tmp = Path("_supabase_sim_config.json")
+        tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        result = asyncio.run(
+            run_simulation(config_path=tmp, timeout_seconds=args.timeout_seconds)
+        )
+        tmp.unlink(missing_ok=True)
+    else:
+        result = asyncio.run(
+            run_simulation(
+                config_path=Path(args.config),
+                timeout_seconds=args.timeout_seconds,
+            )
+        )
+
     display_results(result)
     if args.result_json:
         out = Path(args.result_json)

@@ -197,7 +197,6 @@ def create_orchestrator_agent(
     network: Optional[str] = None,
     readme_path: Optional[str] = None,
     publish_agent_details: bool = False,
-    event_queue: Optional[asyncio.Queue] = None,
 ) -> Agent:
     """Return a fully-wired orchestrator Agent.
 
@@ -205,6 +204,12 @@ def create_orchestrator_agent(
     negotiations to finish before picking the best deal and notifying the
     customer.  When False (default / production) the first deal closes the
     entire request immediately.
+
+    *preload_vendors*: optional list of vendor registry dicts to bootstrap
+    from Supabase on startup (keys: name, services, aggression, sender, vendor_id).
+
+    *on_deal_callback*: optional callable(vendor_name, vendor_id, consumer_addr,
+    service, price, rounds) invoked when a deal closes, e.g. to write to Supabase.
     """
 
     kwargs: Dict[str, Any] = {"name": "orchestrator", "seed": seed}
@@ -228,14 +233,6 @@ def create_orchestrator_agent(
     agent = Agent(**kwargs)
     vendor_registry: Dict[str, Dict[str, Any]] = {}
     requests: Dict[str, Dict[str, Any]] = {}
-
-    def _push_event(evt: Dict[str, Any]) -> None:
-        """Push a real-time event to the WebSocket queue (non-blocking)."""
-        if event_queue is not None:
-            try:
-                event_queue.put_nowait(evt)
-            except Exception:
-                pass
 
     # ── consensus helpers (only used when consensus_mode=True) ──
 
@@ -283,6 +280,13 @@ def create_orchestrator_agent(
                 f"TYPE=terminated\nRID={rid}\nTEXT=Another vendor was selected at ${winner['price']}."))
         ctx.logger.info("CONSENSUS  rid=%s  winner=%s  price=$%s  deals=%d  failed=%d",
                         rid, winner["name"], winner["price"], len(deals), len(failed))
+        if on_deal_callback:
+            w_id = vendor_registry.get(winner['address'], {}).get('vendor_id')
+            on_deal_callback(
+                vendor_name=winner['name'], vendor_id=w_id,
+                consumer_addr=req['customer'],
+                service=req['service'], price=winner['price'], rounds=winner['rounds'],
+            )
 
     # ── apply convergence ──
 
@@ -317,6 +321,20 @@ def create_orchestrator_agent(
                 await ctx.send(va, make_chat_message(
                     f"TYPE=deal_closed\nRID={rid}\nTEXT=Confirmed at ${price}. {reason}"))
                 ctx.logger.info("DEAL  rid=%s  vendor=%s  price=$%s", rid, vn, price)
+                if on_deal_callback:
+                    v_id = vendor_registry.get(va, {}).get('vendor_id')
+                    on_deal_callback(
+                        vendor_name=vn, vendor_id=v_id,
+                        consumer_addr=req['customer'],
+                        service=req['service'], price=price, rounds=vs['rounds'],
+                    )
+                if on_deal_callback:
+                    v_id = vendor_registry.get(va, {}).get("vendor_id")
+                    on_deal_callback(
+                        vendor_name=vn, vendor_id=v_id,
+                        consumer_addr=req["customer"],
+                        service=req["service"], price=price, rounds=vs["rounds"],
+                    )
             return
 
         if action == "terminate":
@@ -537,6 +555,36 @@ if __name__ == "__main__":
 
     load_dotenv()
 
+    # ── Load vendors from Supabase for pre-seeding the registry ──
+    _preloaded: list = []
+    try:
+        from db_helpers import load_all_vendors, vendor_row_to_agent_config, create_job
+        _rows = load_all_vendors()
+        for _r in _rows:
+            _cfg = vendor_row_to_agent_config(_r)
+            _preloaded.append({
+                "vendor_id": _cfg["vendor_id"],
+                "name": _cfg["name"],
+                "services": _cfg["services"],
+                "aggression": _cfg["aggression"],
+            })
+        print(f"[orchestrator] Pre-loaded {len(_preloaded)} vendors from Supabase")
+    except Exception as _e:
+        print(f"[orchestrator] Supabase pre-load skipped: {_e}")
+
+    # ── Deal callback: write job to Supabase ──
+    def _on_deal(**kwargs):
+        try:
+            from db_helpers import create_job as _cj
+            _cj(
+                vendor_id=kwargs.get("vendor_id") or 0,
+                consumer_name=str(kwargs.get("consumer_addr", "unknown")),
+                job_type=kwargs.get("service", "unknown"),
+                price=kwargs.get("price", 0),
+            )
+        except Exception as exc:
+            print(f"[orchestrator] Failed to write job to Supabase: {exc}")
+
     _agent = create_orchestrator_agent(
         seed=os.getenv("ORCHESTRATOR_SEED", "orchestrator_seed_treehacks_2026"),
         max_rounds=int(os.getenv("MAX_NEGOTIATION_ROUNDS", "8")),
@@ -545,6 +593,8 @@ if __name__ == "__main__":
         network="testnet",
         readme_path="README_ORCHESTRATOR.md",
         publish_agent_details=True,
+        preload_vendors=_preloaded if _preloaded else None,
+        on_deal_callback=_on_deal,
     )
     fund_agent_if_low(_agent.wallet.address())
     _agent.run()
