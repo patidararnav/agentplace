@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { startNegotiation, connectNegotiationWS } from '@/lib/api';
 import type { NegotiateParams } from '@/lib/api';
-import type { NegotiationMessage, AgentThought } from '@/types';
+import type { NegotiationMessage } from '@/types';
 
 /* ── Event types from the backend WebSocket ── */
 

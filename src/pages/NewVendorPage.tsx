@@ -11,7 +11,7 @@ import { useApp } from "@/context/AppContext";
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 
 const defaultWeekly: Record<string, string[] | null> = Object.fromEntries(
-  DAYS.map((d) => [d, ["09:00", "17:00"]])
+  DAYS.map((d) => [d, null])
 );
 
 type JobTypeRow = { type: string; price: string; duration_minutes: string };
@@ -22,8 +22,8 @@ export function NewVendorPage() {
 
   const [name, setName] = useState("");
   const [maxDistanceMiles, setMaxDistanceMiles] = useState("25");
-  const [lat, setLat] = useState("37.7749");
-  const [lng, setLng] = useState("-122.4194");
+  const [lat, setLat] = useState("");
+  const [lng, setLng] = useState("");
   const [experienceYears, setExperienceYears] = useState("5");
   const [negotiationAggression, setNegotiationAggression] = useState("1");
   const [weekly, setWeekly] = useState<Record<string, string[] | null>>(defaultWeekly);
@@ -100,7 +100,7 @@ export function NewVendorPage() {
     const created = await insertVendor(payload);
     if (!created) {
       setSubmitting(false);
-      setError("Failed to create vendor. Check Supabase table and RLS.");
+      setError("Failed to create vendor in browser storage.");
       return;
     }
 
@@ -125,7 +125,7 @@ export function NewVendorPage() {
         console.warn("[NewVendorPage] Backend agent registration failed (non-critical):", agentRes.status);
       }
     } catch (err) {
-      // Agent registration is non-critical — vendor still saved in Supabase
+      // Agent registration is non-critical — vendor is already saved locally
       console.warn("[NewVendorPage] Backend agent registration error:", err);
     }
 

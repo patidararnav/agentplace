@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { MapContainer, TileLayer, useMap, CircleMarker, Polyline } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -40,7 +39,6 @@ function MapCenter({ center }: { center: [number, number] }) {
 }
 
 export function MapViewPage() {
-  const navigate = useNavigate();
   const { userLocation, lastPrompt } = useApp();
   const [vendors, setVendors] = useState<MapVendor[]>([]);
   const [activeCount, setActiveCount] = useState(0);

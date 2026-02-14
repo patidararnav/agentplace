@@ -3,10 +3,9 @@ FastAPI bridge server for the agentplace frontend.
 
 Architecture
 ────────────
-•  On startup the server launches a **persistent orchestrator** and
-   a pool of **persistent vendor agents**, each with its own Agentverse
-   mailbox (mailbox=True, network="testnet").  They stay alive for the
-   lifetime of the process and are discoverable on Agentverse / ASI:One.
+•  On startup the server launches a **persistent orchestrator**.
+   Vendor agents are added manually via API and stay alive for the
+   lifetime of the process.
 
 •  Per negotiation request from the frontend the server spins up an
    **ephemeral customer agent** (also mailbox-registered) that talks to
@@ -79,33 +78,9 @@ MAX_ROUNDS = int(os.getenv("MAX_NEGOTIATION_ROUNDS", "5"))
 _CUSTOMER_PORT_START = 9200
 _next_customer_port = _CUSTOMER_PORT_START
 
-# Vendor definitions (each gets its own seed / port / mailbox)
-VENDOR_DEFS = [
-    {
-        "name": "RapidRooter",
-        "seed": "vendor_seed_rapid_rooter_2026",
-        "port": 8101,
-        "services": ["plumbing", "leaky faucet"],
-        "base_prices": {"plumbing": 195, "leaky faucet": 160},
-        "aggression": 2,
-    },
-    {
-        "name": "BudgetFix",
-        "seed": "vendor_seed_budget_fix_2026",
-        "port": 8102,
-        "services": ["plumbing", "electrical", "cleaning"],
-        "base_prices": {"plumbing": 175, "electrical": 200, "cleaning": 120},
-        "aggression": 1,
-    },
-    {
-        "name": "PremiumPipes",
-        "seed": "vendor_seed_premium_pipes_2026",
-        "port": 8103,
-        "services": ["plumbing", "septic tank", "roofing"],
-        "base_prices": {"plumbing": 225, "septic tank": 500, "roofing": 400},
-        "aggression": 4,
-    },
-]
+# Vendor definitions are intentionally empty at startup.
+# Add vendors manually via POST /api/vendors.
+VENDOR_DEFS: list[dict[str, Any]] = []
 
 # ─── FastAPI app ──────────────────────────────────────────────────────────
 
@@ -134,7 +109,7 @@ sessions: Dict[str, Dict[str, Any]] = {}
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    """Create and launch the persistent orchestrator + vendor agents."""
+    """Create and launch the persistent orchestrator (vendors are manual)."""
     global _orchestrator_agent, _orchestrator_address
 
     log.info("\033[36m━━━ AgentPlace Server Starting ━━━\033[0m")
@@ -166,7 +141,7 @@ async def on_startup() -> None:
     )
     _agent_tasks.append(asyncio.create_task(_run_agent(_orchestrator_agent, "orchestrator")))
 
-    # ── Vendors ──
+    # ── Vendors (manual only; no seeded vendors at startup) ──
     for vdef in VENDOR_DEFS:
         va = create_vendor_agent(
             name=vdef["name"],
@@ -202,6 +177,8 @@ async def on_startup() -> None:
     log.info(
         "\033[36m    Orchestrator: %s\033[0m", _orchestrator_address,
     )
+    if not _vendor_agents:
+        log.info("\033[33m[vendor]\033[0m No vendors launched. Add vendors via POST /api/vendors.")
 
 
 @app.on_event("shutdown")

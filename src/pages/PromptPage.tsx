@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, Sparkles, Wrench, Calendar } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
@@ -29,11 +29,7 @@ export function PromptPage() {
   const [creatingConsumer, setCreatingConsumer] = useState(false);
   const [consumerError, setConsumerError] = useState('');
   const navigate = useNavigate();
-  const { setLastPrompt, setNegotiateParams, userLocation, setUserLocation, consumers, selectedConsumer, setSelectedConsumer, refetchConsumers, dataError } = useApp();
-
-  useEffect(() => {
-    if (!userLocation) setUserLocation({ lat: 37.4419, lng: -122.143 });
-  }, [userLocation, setUserLocation]);
+  const { setLastPrompt, setNegotiateParams, consumers, selectedConsumer, setSelectedConsumer, refetchConsumers, dataError } = useApp();
 
   const handleSubmit = () => {
     const trimmed = prompt.trim();
@@ -240,7 +236,6 @@ export function PromptPage() {
               <div className="rounded-lg bg-destructive/10 text-destructive text-sm px-3 py-2 space-y-1">
                 <p className="font-medium">Could not load consumers</p>
                 <p className="text-xs">{dataError.consumers}</p>
-                <p className="text-xs opacity-90">Check table name (ConsumerData), RLS policies, and SUPABASE_SETUP.md.</p>
               </div>
             )}
             <Input
@@ -251,8 +246,7 @@ export function PromptPage() {
             />
             {sortedConsumers.length === 0 && !dataError?.consumers ? (
               <div className="text-sm text-muted-foreground py-4 text-center space-y-1">
-                <p>No consumers loaded. You have data in Supabase?</p>
-                <p className="text-xs">If yes, RLS may be blocking SELECT. Run in SQL Editor: ALTER TABLE public.&quot;ConsumerData&quot; DISABLE ROW LEVEL SECURITY;</p>
+                <p>No consumers yet. Create one below to get started.</p>
               </div>
             ) : sortedConsumers.length === 0 ? null : (
             <div className="max-h-[200px] overflow-auto space-y-1">

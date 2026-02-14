@@ -1,9 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import type { UserLocation, VendorData, ConsumerData, JobData, VendorQuote } from '@/types';
-import { defaultUserLocation } from '@/data/mock';
 import { fetchVendors, fetchConsumers, fetchJobs } from '@/lib/supabase-data';
 import type { NegotiateParams } from '@/lib/api';
-import type { VendorNegotiation, VendorResultEvent } from '@/hooks/useNegotiation';
 
 /** Negotiation results stored after the agent orchestration completes */
 export interface NegotiationResults {
@@ -23,7 +21,7 @@ interface AppState {
   consumers: ConsumerData[];
   jobs: JobData[];
   dataLoading: boolean;
-  /** Set when fetch fails (e.g. RLS, wrong table name). Empty string when OK. */
+  /** Set when local data loading fails (should normally be empty). */
   dataError: { vendors?: string; consumers?: string; jobs?: string };
   refetchVendors: () => Promise<void>;
   refetchConsumers: () => Promise<void>;
@@ -44,7 +42,7 @@ interface AppState {
 const AppContext = createContext<AppState | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [userLocation, setUserLocation] = useState<UserLocation | null>(defaultUserLocation);
+  const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
   const [lastPrompt, setLastPrompt] = useState('');
   const [vendors, setVendors] = useState<VendorData[]>([]);
   const [consumers, setConsumers] = useState<ConsumerData[]>([]);

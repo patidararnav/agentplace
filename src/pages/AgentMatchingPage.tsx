@@ -1,4 +1,4 @@
-import { useEffect, useRef, useMemo } from 'react';
+import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Sparkles, Bot, CheckCircle2, Loader2, Circle,
@@ -9,7 +9,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useApp } from '@/context/AppContext';
 import type { NegotiationResults } from '@/context/AppContext';
 import { useNegotiation } from '@/hooks/useNegotiation';
-import type { StepId, StepStatus, VendorResultEvent } from '@/hooks/useNegotiation';
+import type { StepId, VendorResultEvent } from '@/hooks/useNegotiation';
 import type { VendorQuote, NegotiationMessage, AgentThought } from '@/types';
 import { cn } from '@/lib/utils';
 
