@@ -1,0 +1,38 @@
+{
+  "bureau_port": 8100,
+  "max_rounds": 8,
+  "startup_delay": 3.0,
+  "timeout_seconds": 90,
+  "customer": {
+    "name": "HouseholdCustomer",
+    "seed": "customer_seed_sim_2026",
+    "service": "plumbing",
+    "budget": 210,
+    "urgency": 4,
+    "aggression": 3,
+    "notes": "Need someone reliable and quick. Please include labor and materials."
+  },
+  "vendors": [
+    {
+      "name": "RapidRooter",
+      "seed": "vendor_seed_rapid_rooter_2026",
+      "services": ["plumbing", "leaky faucet"],
+      "base_prices": {"plumbing": 195, "leaky faucet": 160},
+      "aggression": 2
+    },
+    {
+      "name": "BudgetFix",
+      "seed": "vendor_seed_budget_fix_2026",
+      "services": ["plumbing"],
+      "base_prices": {"plumbing": 175},
+      "aggression": 1
+    },
+    {
+      "name": "PremiumPipes",
+      "seed": "vendor_seed_premium_pipes_2026",
+      "services": ["plumbing", "septic tank"],
+      "base_prices": {"plumbing": 225, "septic tank": 500},
+      "aggression": 4
+    }
+  ]
+}

@@ -91,7 +91,6 @@ export function JobCalendarPage() {
   for (let d = 1; d <= daysInMonth; d++) days.push(d);
 
   const today = new Date();
-  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   const isToday = (day: number) =>
     year === today.getFullYear() && month === today.getMonth() && day === today.getDate();
 
