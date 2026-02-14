@@ -1,6 +1,14 @@
-import { X } from 'lucide-react';
 import type { NegotiationMessage } from '@/types';
 import { cn } from '@/lib/utils';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Bot, User } from 'lucide-react';
 
 interface NegotiationChatModalProps {
   messages: NegotiationMessage[];
@@ -10,40 +18,57 @@ interface NegotiationChatModalProps {
 
 export function NegotiationChatModal({ messages, vendorName, onClose }: NegotiationChatModalProps) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={onClose}>
-      <div
-        className="bg-card border border-border rounded-2xl shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-          <h2 className="font-semibold text-foreground">Negotiation with {vendorName}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <X className="size-5" />
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {messages.map((msg, i) => (
-            <div
-              key={i}
-              className={cn(
-                'rounded-xl px-4 py-2.5 text-sm',
-                msg.role === 'agent'
-                  ? 'bg-primary/20 text-foreground ml-0 mr-8'
-                  : 'bg-muted text-foreground mr-0 ml-8'
-              )}
-            >
-              <span className="text-xs font-medium text-muted-foreground block mb-0.5">
-                {msg.role === 'agent' ? 'Agent' : vendorName}
-              </span>
-              {msg.text}
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="sm:max-w-lg max-h-[85vh] flex flex-col gap-0 p-0 bg-card border-border">
+        <DialogHeader className="px-5 py-4 border-b border-border/50">
+          <DialogTitle className="text-base">
+            Negotiation with {vendorName}
+          </DialogTitle>
+        </DialogHeader>
+
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="p-5 space-y-4">
+            {messages.map((msg, i) => {
+              const isAgent = msg.role === 'agent';
+              return (
+                <div
+                  key={i}
+                  className={cn(
+                    'flex gap-3',
+                    isAgent ? 'flex-row' : 'flex-row-reverse'
+                  )}
+                >
+                  <Avatar className="size-7 flex-shrink-0 mt-0.5">
+                    <AvatarFallback
+                      className={cn(
+                        'text-xs',
+                        isAgent
+                          ? 'bg-primary/15 text-primary'
+                          : 'bg-muted text-muted-foreground'
+                      )}
+                    >
+                      {isAgent ? <Bot className="size-3.5" /> : <User className="size-3.5" />}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div
+                    className={cn(
+                      'rounded-xl px-3.5 py-2.5 text-sm max-w-[80%]',
+                      isAgent
+                        ? 'bg-primary/10 text-foreground'
+                        : 'bg-muted text-foreground'
+                    )}
+                  >
+                    <span className="text-[11px] font-medium text-muted-foreground block mb-1">
+                      {isAgent ? 'Your Agent' : vendorName}
+                    </span>
+                    {msg.text}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </ScrollArea>
+      </DialogContent>
+    </Dialog>
   );
 }

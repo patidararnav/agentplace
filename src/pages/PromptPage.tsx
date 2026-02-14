@@ -1,16 +1,21 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send } from 'lucide-react';
+import { ArrowRight, Sparkles } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
-import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+
+const SUGGESTIONS = [
+  'Fix a leak under my kitchen sink',
+  'Deep clean my 2BR apartment',
+  'Install a ceiling fan in the bedroom',
+];
 
 export function PromptPage() {
   const [prompt, setPrompt] = useState('');
   const navigate = useNavigate();
   const { setLastPrompt, userLocation, setUserLocation } = useApp();
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Optional: on first enter, could show location modal; for demo we use default
   useEffect(() => {
     if (!userLocation) setUserLocation({ lat: 37.4419, lng: -122.143 });
   }, [userLocation, setUserLocation]);
@@ -31,43 +36,69 @@ export function PromptPage() {
 
   return (
     <div className="min-h-svh bg-background flex flex-col">
-      <header className="border-b border-border/50 px-4 py-3">
-        <h1 className="text-lg font-semibold text-foreground">Agent Place</h1>
-        <p className="text-sm text-muted-foreground">Describe what you need. Our agent will find and negotiate with local vendors.</p>
+      {/* Subtle top bar */}
+      <header className="px-6 py-4">
+        <div className="flex items-center gap-2">
+          <div className="size-8 rounded-lg bg-primary flex items-center justify-center">
+            <Sparkles className="size-4 text-primary-foreground" />
+          </div>
+          <span className="text-base font-semibold tracking-tight text-foreground">
+            Agent Place
+          </span>
+        </div>
       </header>
 
-      <main className="flex-1 flex flex-col items-center justify-center px-4 pb-8">
-        <div className="w-full max-w-2xl flex flex-col gap-4">
-          <div
-            className={cn(
-              'rounded-2xl border border-border bg-card/50 px-4 py-3',
-              'focus-within:ring-2 focus-within:ring-primary/50 focus-within:border-primary/50'
-            )}
-          >
-            <textarea
-              ref={textareaRef}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="e.g. I need a plumber to fix a leak under my kitchen sink next week..."
-              className="w-full min-h-[160px] resize-none bg-transparent text-foreground placeholder:text-muted-foreground outline-none text-base"
-              rows={5}
-              autoFocus
-            />
+      {/* Hero */}
+      <main className="flex-1 flex flex-col items-center justify-center px-6 pb-16">
+        <div className="w-full max-w-xl space-y-8">
+          {/* Headline */}
+          <div className="space-y-2 text-center">
+            <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-foreground">
+              What do you need done?
+            </h1>
+            <p className="text-muted-foreground text-base">
+              Describe the job. We'll find vendors, negotiate the best price, and book it for you.
+            </p>
           </div>
-          <div className="flex justify-end">
-            <button
-              type="button"
+
+          {/* Input area */}
+          <div className="space-y-3">
+            <div className="relative">
+              <Textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="e.g. I need a plumber to fix a leak under my kitchen sink next week..."
+                className="min-h-[140px] resize-none bg-card border-border text-foreground placeholder:text-muted-foreground text-base leading-relaxed p-4 rounded-xl focus-visible:ring-primary/40"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              {/* Suggestion chips */}
+              <div className="flex flex-wrap gap-2">
+                {SUGGESTIONS.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setPrompt(s)}
+                    className="text-xs text-muted-foreground bg-muted/60 hover:bg-muted hover:text-foreground rounded-full px-3 py-1.5 transition-colors"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <Button
               onClick={handleSubmit}
               disabled={!prompt.trim()}
-              className={cn(
-                'flex items-center gap-2 rounded-xl px-5 py-2.5 font-medium transition-colors',
-                'bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:pointer-events-none'
-              )}
+              size="lg"
+              className="w-full rounded-xl text-base font-medium gap-2"
             >
-              <Send className="size-5" />
-              Send
-            </button>
+              Find vendors
+              <ArrowRight className="size-4" />
+            </Button>
           </div>
         </div>
       </main>

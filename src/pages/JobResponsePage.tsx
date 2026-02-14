@@ -1,104 +1,130 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MessageCircle, Check, ChevronLeft, ChevronRight } from 'lucide-react';
+import { MessageCircle, Check, Star, Clock, DollarSign, Sparkles } from 'lucide-react';
 import { mockQuotes, mockJobStats } from '@/data/mock';
 import { NegotiationChatModal } from '@/components/NegotiationChatModal';
 import type { VendorQuote } from '@/types';
-import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
 
 function formatDate(s: string) {
   const d = new Date(s);
-  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return d.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 export function JobResponsePage() {
   const navigate = useNavigate();
   const [selectedChat, setSelectedChat] = useState<VendorQuote | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [scrollIndex, setScrollIndex] = useState(0);
 
   const stats = mockJobStats;
   const quotes = mockQuotes;
 
-  const scrollTo = (index: number) => {
-    const i = Math.max(0, Math.min(index, quotes.length - 1));
-    setScrollIndex(i);
-    scrollRef.current?.children[i]?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-  };
-
   return (
     <div className="min-h-svh bg-background flex flex-col">
-      <header className="border-b border-border/50 px-4 py-3 flex-shrink-0">
-        <h1 className="text-lg font-semibold text-foreground">Your top quotes</h1>
-        <div className="flex flex-wrap gap-4 mt-2 text-sm text-muted-foreground">
-          <span>{stats.vendorsSearched} vendors searched</span>
-          <span>{stats.vendorsNegotiated} negotiated</span>
+      {/* Header */}
+      <header className="px-6 py-4 flex-shrink-0 border-b border-border/40">
+        <div className="flex items-center gap-3">
+          <div className="size-8 rounded-lg bg-primary flex items-center justify-center">
+            <Sparkles className="size-4 text-primary-foreground" />
+          </div>
+          <div>
+            <h1 className="text-base font-semibold text-foreground">Your top quotes</h1>
+            <p className="text-xs text-muted-foreground">
+              {stats.vendorsSearched} vendors found · {stats.vendorsNegotiated} negotiated
+            </p>
+          </div>
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col min-h-0">
-        <div className="flex items-center gap-2 px-2 py-2">
-          <button
-            type="button"
-            onClick={() => scrollTo(scrollIndex - 1)}
-            disabled={scrollIndex === 0}
-            className="p-2 rounded-lg bg-card border border-border text-foreground disabled:opacity-50"
-          >
-            <ChevronLeft className="size-5" />
-          </button>
-          <div className="flex-1 overflow-x-auto overflow-y-hidden flex gap-4 px-2 py-4 scroll-smooth" ref={scrollRef}>
-            {quotes.map((q) => (
-              <div
-                key={q.vendorId}
-                className="flex-shrink-0 w-[280px] rounded-2xl border border-border bg-card p-4 flex flex-col gap-3"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="rounded-full bg-brand-primary text-primary-foreground w-8 h-8 flex items-center justify-center text-sm font-bold">
-                    {q.rank}
-                  </span>
-                  <span className="text-xs text-brand-emerald font-medium">Top pick</span>
+      {/* Quotes */}
+      <main className="flex-1 overflow-auto px-6 py-6">
+        <div className="max-w-3xl mx-auto space-y-4">
+          {quotes.map((q, idx) => (
+            <Card
+              key={q.vendorId}
+              className={
+                idx === 0
+                  ? 'border-primary/30 bg-card shadow-md'
+                  : 'bg-card'
+              }
+            >
+              <CardContent className="p-5">
+                <div className="flex items-start justify-between gap-4">
+                  {/* Left: vendor info */}
+                  <div className="flex-1 space-y-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="size-9 rounded-full bg-primary/15 flex items-center justify-center text-sm font-bold text-primary">
+                        {q.rank}
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-foreground leading-tight">
+                          {q.name}
+                        </h3>
+                        {idx === 0 && (
+                          <Badge variant="secondary" className="mt-1 text-xs gap-1">
+                            <Star className="size-3" />
+                            Best match
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+
+                    <Separator className="bg-border/50" />
+
+                    <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
+                      <span className="flex items-center gap-1.5">
+                        <Clock className="size-3.5" />
+                        {formatDate(q.dateTime)}
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <Clock className="size-3.5" />
+                        {q.durationMinutes} min
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Right: price */}
+                  <div className="text-right flex-shrink-0">
+                    <div className="flex items-baseline gap-1">
+                      <DollarSign className="size-4 text-muted-foreground" />
+                      <span className="text-3xl font-bold text-foreground tracking-tight">
+                        {q.price}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <h3 className="font-semibold text-foreground">{q.name}</h3>
-                <div className="text-2xl font-bold text-foreground">${q.price}</div>
-                <div className="text-sm text-muted-foreground space-y-0.5">
-                  <p>{formatDate(q.dateTime)}</p>
-                  <p>{q.durationMinutes} min</p>
-                </div>
-                <div className="flex gap-2 mt-auto pt-2">
-                  <button
-                    type="button"
+
+                {/* Actions */}
+                <div className="flex gap-2 mt-4 pt-3 border-t border-border/30">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1 gap-1.5"
                     onClick={() => setSelectedChat(q)}
-                    className={cn(
-                      'flex-1 flex items-center justify-center gap-1.5 rounded-xl py-2.5 text-sm font-medium',
-                      'bg-muted text-foreground hover:bg-muted/80'
-                    )}
                   >
                     <MessageCircle className="size-4" />
-                    Chat
-                  </button>
-                  <button
-                    type="button"
+                    View negotiation
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="flex-1 gap-1.5"
                     onClick={() => navigate('/calendar')}
-                    className={cn(
-                      'flex-1 flex items-center justify-center gap-1.5 rounded-xl py-2.5 text-sm font-medium',
-                      'bg-brand-emerald text-white hover:opacity-90'
-                    )}
                   >
                     <Check className="size-4" />
-                    Accept
-                  </button>
+                    Accept quote
+                  </Button>
                 </div>
-              </div>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={() => scrollTo(scrollIndex + 1)}
-            disabled={scrollIndex >= quotes.length - 1}
-            className="p-2 rounded-lg bg-card border border-border text-foreground disabled:opacity-50"
-          >
-            <ChevronRight className="size-5" />
-          </button>
+              </CardContent>
+            </Card>
+          ))}
         </div>
       </main>
 
