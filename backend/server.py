@@ -35,7 +35,7 @@ from typing import Any, Dict
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -333,7 +333,7 @@ async def _run_agent(agent, label: str) -> None:
 
 
 class NegotiateRequest(BaseModel):
-    service: str = "plumbing"
+    service: str = Field(..., min_length=1)
     budget: int = 200
     urgency: int = 3
     aggression: int = 3
@@ -632,6 +632,124 @@ class AddServiceRequest(BaseModel):
     duration_minutes: int = 60
 
 
+class UpsertVendorDataRequest(BaseModel):
+    vendor_id: int | None = None
+    name: str
+    weekly_availability: Dict[str, Any] = Field(default_factory=dict)
+    max_distance_miles: int = 0
+    home_location: Dict[str, float] = Field(default_factory=lambda: {"lat": 0, "lng": 0})
+    experience_years: int = 0
+    negotiation_aggression: int = 1
+    pricing_strategy: str = "maximize_jobs"
+    job_types: list[Dict[str, Any]] = Field(default_factory=list)
+    job_ids: list[int] = Field(default_factory=list)
+    reviews: list[str] = Field(default_factory=list)
+    average_rating: str | int | float | None = None
+    total_ratings: str | int | float | None = None
+
+
+class UpsertCustomerDataRequest(BaseModel):
+    consumer_name: str
+    job_count: int = 0
+    job_ids: list[int] = Field(default_factory=list)
+
+
+class CreateJobRequest(BaseModel):
+    vendor_id: int
+    vendor_name: str = ""
+    consumer_name: str
+    job_type: str
+    price: int
+    duration_minutes: int = 60
+    date: str | None = None
+    start_time: str = "09:00"
+    status: int = 5
+
+
+@app.post("/api/data/vendors")
+async def upsert_vendor_data(req: UpsertVendorDataRequest) -> Dict[str, Any]:
+    """Persist vendor data to Supabase (service-key path, bypasses frontend RLS issues)."""
+    try:
+        from db_helpers import create_or_update_vendor as _create_or_update_vendor
+
+        vendor = _create_or_update_vendor(req.model_dump())
+        if vendor is None:
+            raise HTTPException(status_code=500, detail="Failed to upsert vendor")
+        return {"ok": True, "vendor": vendor}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("upsert_vendor_data: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.patch("/api/data/vendors/{vendor_id}")
+async def update_vendor_data(vendor_id: int, req: UpsertVendorDataRequest) -> Dict[str, Any]:
+    """Update vendor data in Supabase by vendor_id."""
+    try:
+        from db_helpers import create_or_update_vendor as _create_or_update_vendor
+
+        payload = req.model_dump()
+        payload["vendor_id"] = vendor_id
+        vendor = _create_or_update_vendor(payload)
+        if vendor is None:
+            raise HTTPException(status_code=500, detail="Failed to update vendor")
+        return {"ok": True, "vendor": vendor}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("update_vendor_data %s: %s", vendor_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/data/customers")
+async def upsert_customer_data(req: UpsertCustomerDataRequest) -> Dict[str, Any]:
+    """Persist customer data to Supabase (service-key path)."""
+    try:
+        from db_helpers import create_or_get_consumer as _create_or_get_consumer
+
+        consumer = _create_or_get_consumer(
+            consumer_name=req.consumer_name,
+            job_count=req.job_count,
+            job_ids=req.job_ids,
+        )
+        if consumer is None:
+            raise HTTPException(status_code=500, detail="Failed to upsert customer")
+        return {"ok": True, "customer": consumer}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("upsert_customer_data: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/jobs")
+async def create_job(req: CreateJobRequest) -> Dict[str, Any]:
+    """Create a booked job row (called only when customer accepts a quote)."""
+    try:
+        from db_helpers import create_job as _create_job
+
+        job = _create_job(
+            vendor_id=req.vendor_id,
+            vendor_name=req.vendor_name,
+            consumer_name=req.consumer_name,
+            job_type=req.job_type,
+            price=req.price,
+            duration_minutes=req.duration_minutes,
+            date=req.date,
+            start_time=req.start_time,
+            status=req.status,
+        )
+        if job is None:
+            raise HTTPException(status_code=500, detail="Failed to create job")
+        return {"ok": True, "job": job}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("create_job: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/api/vendors")
 async def register_vendor(req: CreateVendorRequest) -> Dict[str, Any]:
     """Dynamically spin up a new vendor agent and register it with the orchestrator."""
@@ -645,6 +763,37 @@ async def register_vendor(req: CreateVendorRequest) -> Dict[str, Any]:
         "\033[35m[API]\033[0m POST /api/vendors  name=%s  services=%s  aggression=%s  strategy=%s  port=%s",
         req.name, req.services, req.aggression, req.pricing_strategy, port,
     )
+
+    # Persist vendor row in Supabase so newly added vendors survive restarts.
+    try:
+        from db_helpers import create_or_update_vendor as _create_or_update_vendor
+
+        persisted = _create_or_update_vendor({
+            "vendor_id": req.vendor_id or None,
+            "name": req.name,
+            "weekly_availability": req.weekly_availability or {},
+            "max_distance_miles": 0,
+            "home_location": {"lat": 0, "lng": 0},
+            "experience_years": 0,
+            "negotiation_aggression": req.aggression,
+            "pricing_strategy": req.pricing_strategy,
+            "job_types": [
+                {
+                    "type": svc,
+                    "price": int(req.base_prices.get(svc, 0)),
+                    "duration_minutes": 60,
+                }
+                for svc in req.services
+            ],
+            "job_ids": [],
+            "reviews": [],
+            "average_rating": None,
+            "total_ratings": None,
+        })
+        vendor_id = int((persisted or {}).get("vendor_id") or req.vendor_id or 0)
+    except Exception as exc:
+        log.warning("register_vendor persist warning: %s", exc)
+        vendor_id = int(req.vendor_id or 0)
 
     va = create_vendor_agent(
         name=req.name,
@@ -660,7 +809,7 @@ async def register_vendor(req: CreateVendorRequest) -> Dict[str, Any]:
         registration_policy=AlmanacApiRegistrationPolicy(),
         pricing_strategy=req.pricing_strategy,
         weekly_availability=req.weekly_availability or {},
-        vendor_id=req.vendor_id or 0,
+        vendor_id=vendor_id,
     )
 
     # Fix event-loop mismatch (same issue as persistent agents)
@@ -669,7 +818,7 @@ async def register_vendor(req: CreateVendorRequest) -> Dict[str, Any]:
         va._loop = running_loop
 
     vdef = {
-        "vendor_id": req.vendor_id,
+        "vendor_id": vendor_id,
         "name": req.name,
         "seed": seed,
         "port": port,
@@ -689,6 +838,7 @@ async def register_vendor(req: CreateVendorRequest) -> Dict[str, Any]:
     )
 
     return {
+        "vendor_id": vendor_id,
         "name": req.name,
         "address": va.address,
         "port": port,
@@ -699,11 +849,23 @@ async def register_vendor(req: CreateVendorRequest) -> Dict[str, Any]:
 
 @app.post("/api/vendors/service")
 async def add_vendor_service(req: AddServiceRequest) -> Dict[str, Any]:
-    """Add a service to an existing vendor agent (metadata only for now)."""
+    """Add/update a vendor service in Supabase and runtime vendor metadata."""
     log.info(
         "\033[35m[API]\033[0m POST /api/vendors/service  vendor=%s  service=%s  price=$%s",
         req.vendor_name, req.job_type, req.price,
     )
+
+    from db_helpers import add_service_to_vendor as _add_service_to_vendor
+
+    saved_vendor = _add_service_to_vendor(
+        vendor_name=req.vendor_name,
+        service_name=req.service_name,
+        job_type=req.job_type,
+        price=req.price,
+        duration_minutes=req.duration_minutes,
+    )
+    if saved_vendor is None:
+        raise HTTPException(status_code=404, detail=f"Vendor '{req.vendor_name}' not found")
 
     # Find the matching vendor definition and update its services
     for vdef in VENDOR_DEFS:
@@ -715,13 +877,18 @@ async def add_vendor_service(req: AddServiceRequest) -> Dict[str, Any]:
                 "\033[32m[API]\033[0m Updated vendor %s — services now: %s",
                 vdef["name"], vdef["services"],
             )
-            return {"status": "updated", "vendor": vdef["name"], "services": vdef["services"]}
+            return {
+                "status": "updated",
+                "vendor": vdef["name"],
+                "services": vdef["services"],
+                "saved_vendor": saved_vendor,
+            }
 
-    return {"status": "vendor_not_found", "vendor": req.vendor_name}
+    return {"status": "updated", "vendor": req.vendor_name, "saved_vendor": saved_vendor}
 
 
 @app.get("/api/avg-price")
-async def avg_price(query: str = "", service: str = "plumbing") -> Dict[str, Any]:
+async def avg_price(query: str = "", service: str = "") -> Dict[str, Any]:
     """Return the average price of similar past jobs, using LLM matching.
 
     Accepts a raw user query (e.g. 'leaky faucet in my kitchen') and/or
@@ -746,7 +913,7 @@ async def avg_price(query: str = "", service: str = "plumbing") -> Dict[str, Any
     if not distinct_types:
         return {"avg_price": 0, "job_count": 0, "matched_types": [], "query": query or service}
 
-    user_text = query.strip() if query.strip() else service
+    user_text = query.strip() if query.strip() else service.strip()
 
     # Ask the LLM which job types are relevant to this query
     system_prompt = (
@@ -797,13 +964,19 @@ async def avg_price(query: str = "", service: str = "plumbing") -> Dict[str, Any
             except Exception:
                 pass
 
-    # If LLM returned nothing, fall back to substring matching
-    if not matched_types:
-        needle = (service or user_text).strip().lower()
-        for t in distinct_types:
-            tl = t.lower()
-            if needle in tl or tl in needle:
-                matched_types.append(t)
+    # Keep only exact job types that exist in the DB (case-insensitive).
+    # No keyword/alias fallback: if the LLM does not return valid types,
+    # this endpoint intentionally returns zero matches.
+    if matched_types:
+        resolved: list[str] = []
+        by_lower = {t.lower(): t for t in distinct_types}
+        for m in matched_types:
+            ml = m.strip().lower()
+            if not ml:
+                continue
+            if ml in by_lower:
+                resolved.append(by_lower[ml])
+        matched_types = list(dict.fromkeys(resolved))
 
     result = compute_avg_price(rows, matched_types)
     result["query"] = user_text

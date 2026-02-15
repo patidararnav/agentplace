@@ -3,11 +3,9 @@ Database helper functions for loading agent configurations from Supabase.
 
 These functions translate Supabase rows into the parameter dicts that the
 agent factory functions (create_vendor_agent, create_customer_agent, etc.)
-expect.  They also provide write helpers for creating jobs and updating
-records after a deal closes.
+expect. They also provide write helpers used by backend API routes.
 """
 
-import json
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -51,11 +49,11 @@ def load_vendors_for_service(service_type: str) -> List[Dict[str, Any]]:
     """Load all vendors whose job_types include the given service."""
     all_vendors = load_all_vendors()
     needle = service_type.strip().lower()
-    matches = []
+    matches: List[Dict[str, Any]] = []
     for row in all_vendors:
         job_types = row.get("job_types") or []
         for jt in job_types:
-            if isinstance(jt, dict) and needle in jt.get("type", "").lower():
+            if isinstance(jt, dict) and needle in str(jt.get("type", "")).lower():
                 matches.append(row)
                 break
     return matches
@@ -68,11 +66,11 @@ def vendor_row_to_agent_config(row: Dict[str, Any]) -> Dict[str, Any]:
     pricing_strategy, vendor_id.
     """
     job_types = row.get("job_types") or []
-    services = []
+    services: List[str] = []
     base_prices: Dict[str, int] = {}
     for jt in job_types:
         if isinstance(jt, dict):
-            svc = jt.get("type", "").strip().lower()
+            svc = str(jt.get("type", "")).strip().lower()
             price = int(jt.get("price", 150))
             if svc:
                 services.append(svc)
@@ -119,8 +117,248 @@ def load_consumer(consumer_name: str) -> Optional[Dict[str, Any]]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  WRITE helpers (called after deal closure)
+#  WRITE helpers
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+def _normalize_pricing_strategy(raw: Any) -> str:
+    token = str(raw or "maximize_jobs").strip().lower().replace("-", "_").replace(" ", "_")
+    if token not in {"maximize_jobs", "high_value_only", "yield_optimizer"}:
+        return "maximize_jobs"
+    return token
+
+
+def _is_missing_column_error(exc: Exception, column: str) -> bool:
+    message = str(exc).lower()
+    return "column" in message and column.lower() in message
+
+
+def _next_numeric_id(table_name: str, id_column: str) -> int:
+    sb = get_supabase()
+    existing = (
+        sb.table(table_name)
+        .select(id_column)
+        .order(id_column, desc=True)
+        .limit(1)
+        .execute()
+    )
+    return ((existing.data[0][id_column] if existing.data else 0) + 1)
+
+
+def _to_int_list(values: Any) -> List[int]:
+    if not isinstance(values, list):
+        return []
+    out: List[int] = []
+    for value in values:
+        try:
+            out.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _normalize_job_types(job_types: Any) -> List[Dict[str, Any]]:
+    if not isinstance(job_types, list):
+        return []
+    normalized: List[Dict[str, Any]] = []
+    for jt in job_types:
+        if not isinstance(jt, dict):
+            continue
+        service = str(jt.get("type") or "").strip()
+        if not service:
+            continue
+        try:
+            price = int(jt.get("price") or 0)
+        except (TypeError, ValueError):
+            price = 0
+        try:
+            duration = int(jt.get("duration_minutes") or 60)
+        except (TypeError, ValueError):
+            duration = 60
+        normalized.append({
+            "type": service,
+            "price": max(0, price),
+            "duration_minutes": max(1, duration),
+        })
+    return normalized
+
+
+def create_or_update_vendor(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Create or update a vendor row in Supabase by vendor_id."""
+    sb = get_supabase()
+
+    vendor_id = int(payload.get("vendor_id") or 0)
+    if vendor_id <= 0:
+        vendor_id = _next_numeric_id(TABLE_VENDOR, "vendor_id")
+
+    name = str(payload.get("name") or f"Vendor {vendor_id}").strip() or f"Vendor {vendor_id}"
+    weekly_availability = payload.get("weekly_availability")
+    if not isinstance(weekly_availability, dict):
+        weekly_availability = {}
+    home_location = payload.get("home_location")
+    if not isinstance(home_location, dict):
+        home_location = {"lat": 0, "lng": 0}
+
+    row: Dict[str, Any] = {
+        "vendor_id": vendor_id,
+        "name": name,
+        "weekly_availability": weekly_availability,
+        "max_distance_miles": int(payload.get("max_distance_miles") or 0),
+        "home_location": {
+            "lat": float(home_location.get("lat", 0)),
+            "lng": float(home_location.get("lng", 0)),
+        },
+        "experience_years": int(payload.get("experience_years") or 0),
+        "negotiation_aggression": max(1, min(5, int(payload.get("negotiation_aggression") or 1))),
+        "pricing_strategy": _normalize_pricing_strategy(payload.get("pricing_strategy")),
+        "job_types": _normalize_job_types(payload.get("job_types")),
+        "job_ids": _to_int_list(payload.get("job_ids")),
+        "reviews": [str(r) for r in (payload.get("reviews") or []) if str(r).strip()],
+        "average_rating": (
+            str(payload.get("average_rating"))
+            if payload.get("average_rating") is not None
+            else None
+        ),
+        "total_ratings": (
+            str(payload.get("total_ratings"))
+            if payload.get("total_ratings") is not None
+            else None
+        ),
+    }
+
+    existing = (
+        sb.table(TABLE_VENDOR)
+        .select("vendor_id")
+        .eq("vendor_id", vendor_id)
+        .maybe_single()
+        .execute()
+    )
+    is_update = bool(existing.data)
+    update_row = {k: v for k, v in row.items() if k != "vendor_id"}
+
+    def _write(with_strategy: bool) -> Dict[str, Any]:
+        insert_row = row if with_strategy else {k: v for k, v in row.items() if k != "pricing_strategy"}
+        patch_row = update_row if with_strategy else {k: v for k, v in update_row.items() if k != "pricing_strategy"}
+        if is_update:
+            result = (
+                sb.table(TABLE_VENDOR)
+                .update(patch_row)
+                .eq("vendor_id", vendor_id)
+                .select("*")
+                .single()
+                .execute()
+            )
+        else:
+            result = sb.table(TABLE_VENDOR).insert(insert_row).select("*").single().execute()
+        return result.data if result.data else row
+
+    try:
+        return _write(with_strategy=True)
+    except Exception as exc:
+        if not _is_missing_column_error(exc, "pricing_strategy"):
+            logger.error("Failed to upsert vendor %s: %s", vendor_id, exc)
+            return None
+        try:
+            logger.warning(
+                "Vendor table missing pricing_strategy column; retrying without it for vendor_id=%s",
+                vendor_id,
+            )
+            return _write(with_strategy=False)
+        except Exception as fallback_exc:
+            logger.error("Failed to upsert vendor %s: %s", vendor_id, fallback_exc)
+            return None
+
+
+def create_or_get_consumer(
+    consumer_name: str,
+    job_count: int = 0,
+    job_ids: Optional[List[int]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return an existing consumer row, or create one when absent."""
+    cleaned = str(consumer_name or "").strip()
+    if not cleaned:
+        return None
+
+    existing = load_consumer(cleaned)
+    if existing:
+        return existing
+
+    sb = get_supabase()
+    row = {
+        "consumer_name": cleaned,
+        "job_count": max(0, int(job_count or 0)),
+        "job_ids": _to_int_list(job_ids or []),
+    }
+    try:
+        result = sb.table(TABLE_CONSUMER).insert(row).select("*").single().execute()
+        return result.data if result.data else row
+    except Exception as exc:
+        logger.error("Failed to create consumer %s: %s", cleaned, exc)
+        return None
+
+
+def add_service_to_vendor(
+    vendor_name: str,
+    service_name: str,
+    job_type: str,
+    price: int,
+    duration_minutes: int = 60,
+) -> Optional[Dict[str, Any]]:
+    """Add or update a single job_type entry for a vendor by name."""
+    sb = get_supabase()
+    cleaned_vendor = str(vendor_name or "").strip().lower()
+    if not cleaned_vendor:
+        return None
+
+    target: Optional[Dict[str, Any]] = None
+    for vendor in load_all_vendors():
+        if str(vendor.get("name", "")).strip().lower() == cleaned_vendor:
+            target = vendor
+            break
+    if target is None:
+        return None
+
+    normalized_type = str(job_type or service_name or "").strip()
+    if not normalized_type:
+        return None
+
+    display_type = str(service_name or normalized_type).strip() or normalized_type
+    updated_job_types = list(target.get("job_types") or [])
+    replaced = False
+    for idx, jt in enumerate(updated_job_types):
+        if not isinstance(jt, dict):
+            continue
+        if str(jt.get("type", "")).strip().lower() == normalized_type.lower():
+            updated_job_types[idx] = {
+                "type": str(jt.get("type") or display_type),
+                "price": max(0, int(price or 0)),
+                "duration_minutes": max(1, int(duration_minutes or 60)),
+            }
+            replaced = True
+            break
+    if not replaced:
+        updated_job_types.append({
+            "type": display_type,
+            "price": max(0, int(price or 0)),
+            "duration_minutes": max(1, int(duration_minutes or 60)),
+        })
+
+    vendor_id = int(target.get("vendor_id") or 0)
+    if vendor_id <= 0:
+        return None
+    try:
+        result = (
+            sb.table(TABLE_VENDOR)
+            .update({"job_types": updated_job_types})
+            .eq("vendor_id", vendor_id)
+            .select("*")
+            .single()
+            .execute()
+        )
+        return result.data if result.data else {**target, "job_types": updated_job_types}
+    except Exception as exc:
+        logger.error("Failed to update job_types for vendor %s: %s", vendor_name, exc)
+        return None
 
 
 def create_job(
@@ -132,22 +370,50 @@ def create_job(
     date: Optional[str] = None,
     start_time: str = "09:00",
     status: int = 5,  # 5 = Booked
+    vendor_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Create a new job in Supabase and update vendor/consumer job_ids.
-
-    Returns the created job row, or None on failure.
-    """
+    """Create a new booked job in Supabase and update vendor/consumer job_ids."""
     sb = get_supabase()
 
-    # Generate next job_id
-    existing = (
-        sb.table(TABLE_JOBS)
-        .select("job_id")
-        .order("job_id", desc=True)
-        .limit(1)
-        .execute()
-    )
-    next_id = ((existing.data[0]["job_id"] if existing.data else 0) + 1)
+    vendor_id = int(vendor_id or 0)
+    cleaned_consumer_name = str(consumer_name or "").strip()
+    cleaned_job_type = str(job_type or "").strip() or "unknown"
+    if vendor_id <= 0:
+        logger.error("Cannot create job without valid vendor_id (got %s)", vendor_id)
+        return None
+    if not cleaned_consumer_name:
+        logger.error("Cannot create job without consumer_name")
+        return None
+
+    # Ensure related records exist before creating the job row.
+    create_or_get_consumer(cleaned_consumer_name)
+    vendor = load_vendor(vendor_id)
+    if vendor is None:
+        logger.warning(
+            "Vendor %s missing when creating job; creating a default vendor row",
+            vendor_id,
+        )
+        create_or_update_vendor({
+            "vendor_id": vendor_id,
+            "name": vendor_name or f"Vendor {vendor_id}",
+            "weekly_availability": {},
+            "max_distance_miles": 0,
+            "home_location": {"lat": 0, "lng": 0},
+            "experience_years": 0,
+            "negotiation_aggression": 1,
+            "pricing_strategy": "maximize_jobs",
+            "job_types": [{
+                "type": cleaned_job_type,
+                "price": int(price or 0),
+                "duration_minutes": int(duration_minutes or 60),
+            }],
+            "job_ids": [],
+            "reviews": [],
+            "average_rating": None,
+            "total_ratings": None,
+        })
+
+    next_id = _next_numeric_id(TABLE_JOBS, "job_id")
 
     if date is None:
         date = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
@@ -158,68 +424,77 @@ def create_job(
         et = st + timedelta(minutes=duration_minutes)
         end_time = et.strftime("%H:%M")
     except ValueError:
+        start_time = "09:00"
         end_time = "10:00"
 
     row = {
         "job_id": next_id,
         "vendor_id": vendor_id,
-        "consumer_name": consumer_name,
-        "type": job_type,
+        "consumer_name": cleaned_consumer_name,
+        "type": cleaned_job_type,
         "date": date,
         "start_time": start_time,
         "end_time": end_time,
-        "price": price,
-        "duration_minutes": duration_minutes,
-        "status": status,
+        "price": int(price or 0),
+        "duration_minutes": max(1, int(duration_minutes or 60)),
+        "status": int(status or 5),
     }
 
     try:
-        result = sb.table(TABLE_JOBS).insert(row).execute()
-    except Exception as e:
-        logger.error("Failed to create job: %s", e)
+        result = sb.table(TABLE_JOBS).insert(row).select("*").single().execute()
+    except Exception as exc:
+        logger.error("Failed to create job: %s", exc)
         return None
 
     # Update vendor's job_ids
     try:
-        vendor = (
+        vendor_result = (
             sb.table(TABLE_VENDOR)
             .select("job_ids")
             .eq("vendor_id", vendor_id)
             .maybe_single()
             .execute()
         )
-        if vendor.data:
-            job_ids = vendor.data.get("job_ids") or []
-            job_ids.append(next_id)
+        if vendor_result.data:
+            job_ids = _to_int_list(vendor_result.data.get("job_ids"))
+            if next_id not in job_ids:
+                job_ids.append(next_id)
             sb.table(TABLE_VENDOR).update({"job_ids": job_ids}).eq(
                 "vendor_id", vendor_id
             ).execute()
-    except Exception as e:
-        logger.warning("Failed to update vendor job_ids: %s", e)
+    except Exception as exc:
+        logger.warning("Failed to update vendor job_ids: %s", exc)
 
     # Update consumer's job_ids + job_count
     try:
         consumer = (
             sb.table(TABLE_CONSUMER)
             .select("job_ids, job_count")
-            .eq("consumer_name", consumer_name)
+            .eq("consumer_name", cleaned_consumer_name)
             .maybe_single()
             .execute()
         )
         if consumer.data:
-            c_ids = consumer.data.get("job_ids") or []
-            c_ids.append(next_id)
+            c_ids = _to_int_list(consumer.data.get("job_ids"))
+            if next_id not in c_ids:
+                c_ids.append(next_id)
             sb.table(TABLE_CONSUMER).update(
                 {"job_ids": c_ids, "job_count": len(c_ids)}
-            ).eq("consumer_name", consumer_name).execute()
-    except Exception as e:
-        logger.warning("Failed to update consumer job_ids: %s", e)
+            ).eq("consumer_name", cleaned_consumer_name).execute()
+        else:
+            sb.table(TABLE_CONSUMER).insert({
+                "consumer_name": cleaned_consumer_name,
+                "job_count": 1,
+                "job_ids": [next_id],
+            }).execute()
+    except Exception as exc:
+        logger.warning("Failed to update consumer job_ids: %s", exc)
 
     logger.info(
         "Created job #%d: vendor=%d consumer=%s type=%s price=$%d",
-        next_id, vendor_id, consumer_name, job_type, price,
+        next_id, vendor_id, cleaned_consumer_name, cleaned_job_type, int(price or 0),
     )
-    return result.data[0] if result.data else row
+    return result.data if result.data else row
 
 
 def update_job_status(job_id: int, status: int) -> bool:
@@ -228,8 +503,8 @@ def update_job_status(job_id: int, status: int) -> bool:
     try:
         sb.table(TABLE_JOBS).update({"status": status}).eq("job_id", job_id).execute()
         return True
-    except Exception as e:
-        logger.error("Failed to update job %d status: %s", job_id, e)
+    except Exception as exc:
+        logger.error("Failed to update job %d status: %s", job_id, exc)
         return False
 
 
@@ -244,8 +519,8 @@ def get_all_job_types_with_prices() -> List[Dict[str, Any]]:
     try:
         result = sb.table(TABLE_JOBS).select("price, type").execute()
         return result.data or []
-    except Exception as e:
-        logger.warning("Failed to query jobs: %s", e)
+    except Exception as exc:
+        logger.warning("Failed to query jobs: %s", exc)
         return []
 
 

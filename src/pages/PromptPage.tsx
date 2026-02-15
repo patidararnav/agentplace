@@ -60,9 +60,9 @@ function formatAvailabilityForNotes(selected: Set<string>): string {
     .join('\n');
 }
 
-function inferServiceFromPrompt(prompt: string): string {
+function inferServiceFromPrompt(prompt: string, fallback = ''): string {
   const lower = prompt.toLowerCase();
-  let service = 'plumbing';
+  let service = fallback;
   if (lower.includes('electric')) service = 'electrical';
   else if (lower.includes('clean')) service = 'cleaning';
   else if (lower.includes('paint')) service = 'painting';
@@ -91,13 +91,17 @@ export function PromptPage() {
   const { setLastPrompt, customers, selectedCustomer, setSelectedCustomer, refetchCustomers, dataError, setNegotiateParams } = useApp();
   const weekDays = nextWeekDays();
 
+  useEffect(() => {
+    if (!selectedCustomer) setCustomerOpen(true);
+  }, [selectedCustomer]);
+
   // Track the last query we fetched avg price for to avoid redundant calls
   const lastFetchedQuery = useRef('');
 
   // Only trigger the fetch once the user has typed a meaningful description
   const trimmedPrompt = prompt.trim();
   const hasDescription = trimmedPrompt.length > 10;
-  const inferredService = hasDescription ? inferServiceFromPrompt(prompt) : '';
+  const inferredService = hasDescription ? inferServiceFromPrompt(prompt, '') : '';
 
   const fetchAvg = useCallback(async (query: string, service: string) => {
     if (!query || query === lastFetchedQuery.current) return;
@@ -149,8 +153,13 @@ export function PromptPage() {
     const trimmed = prompt.trim();
     if (!trimmed) return;
     if (!urgency) return;
+    if (!selectedCustomer) {
+      setCustomerOpen(true);
+      return;
+    }
 
-    const service = inferServiceFromPrompt(trimmed);
+    const inferredService = inferServiceFromPrompt(trimmed, '');
+    const service = inferredService || trimmed;
     const budget = budgetStr ? parseInt(budgetStr, 10) : (avgPrice?.avg_price || 200);
 
     setLastPrompt(trimmed);
@@ -226,7 +235,13 @@ export function PromptPage() {
             variant="ghost"
             size="sm"
             className="text-muted-foreground hover:text-foreground gap-1.5"
-            onClick={() => navigate('/customer/calendar')}
+            onClick={() => {
+              if (!selectedCustomer) {
+                setCustomerOpen(true);
+                return;
+              }
+              navigate('/customer/calendar');
+            }}
           >
             <Calendar className="size-3.5" />
             My calendar
@@ -251,6 +266,21 @@ export function PromptPage() {
 
       {/* Hero */}
       <main className="flex-1 flex flex-col items-center justify-center px-6 pb-16">
+        {!selectedCustomer ? (
+          <div className="w-full max-w-xl">
+            <div className="rounded-2xl border border-border/60 bg-card/50 p-8 text-center space-y-3">
+              <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+                Choose or create a customer
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                Select who you are to continue. Agent orchestration is only available for customer accounts.
+              </p>
+              <Button onClick={() => setCustomerOpen(true)} size="lg" className="rounded-xl">
+                Choose customer
+              </Button>
+            </div>
+          </div>
+        ) : (
         <div className="w-full max-w-xl space-y-8">
           <div className="space-y-2 text-center">
             <style>{`
@@ -461,6 +491,7 @@ export function PromptPage() {
             </Button>
           </div>
         </div>
+        )}
       </main>
 
       {/* Customer picker dialog */}
