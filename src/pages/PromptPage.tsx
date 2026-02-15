@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { ArrowRight, Sparkles, Wrench, Calendar } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
@@ -21,6 +21,40 @@ const SUGGESTIONS = [
   'Paint my living room walls — neutral tones',
 ];
 
+function inferServiceFromPrompt(prompt: string): string {
+  const lower = prompt.toLowerCase();
+  let service = 'plumbing';
+  if (lower.includes('electric')) service = 'electrical';
+  else if (lower.includes('clean')) service = 'cleaning';
+  else if (lower.includes('paint')) service = 'painting';
+  else if (lower.includes('roof')) service = 'roofing';
+  else if (lower.includes('plumb') || lower.includes('leak') || lower.includes('faucet') || lower.includes('pipe') || lower.includes('drain') || lower.includes('sink')) service = 'plumbing';
+  else if (lower.includes('fan') || lower.includes('install')) service = 'electrical';
+  return service;
+}
+
+function extractMaxBudget(prompt: string): number | null {
+  const text = prompt.toLowerCase();
+
+  // Strong signal: explicit currency mention.
+  const dollarMatch = text.match(/\$\s*([0-9]{2,5})\b/);
+  if (dollarMatch) return parseInt(dollarMatch[1], 10);
+
+  // Soft signal: a number paired with budget-limit wording.
+  const maxBudgetPatterns = [
+    /max(?:imum)?(?:\s+budget)?\s*(?:is|of|:)?\s*\$?\s*([0-9]{2,5})\b/i,
+    /(?:under|below|less than|up to|within)\s*\$?\s*([0-9]{2,5})\b/i,
+    /(?:budget|spend)\s*(?:is|of|around|about)?\s*\$?\s*([0-9]{2,5})\b/i,
+  ];
+
+  for (const pattern of maxBudgetPatterns) {
+    const match = prompt.match(pattern);
+    if (match?.[1]) return parseInt(match[1], 10);
+  }
+
+  return null;
+}
+
 export function PromptPage() {
   const [prompt, setPrompt] = useState('');
   const [customerOpen, setCustomerOpen] = useState(false);
@@ -31,16 +65,33 @@ export function PromptPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const promptSelectCustomer = (location.state as { promptSelectCustomer?: boolean } | null)?.promptSelectCustomer ?? false;
-  const { setLastPrompt, userLocation, setUserLocation, customers, selectedCustomer, setSelectedCustomer, refetchCustomers, dataError } = useApp();
+  const { setLastPrompt, customers, selectedCustomer, setSelectedCustomer, refetchCustomers, dataError, setNegotiateParams } = useApp();
+  const [budgetWarningOpen, setBudgetWarningOpen] = useState(false);
 
-  useEffect(() => {
-    if (!userLocation) setUserLocation({ lat: 37.4419, lng: -122.143 });
-  }, [userLocation, setUserLocation]);
-
-  const handleSubmit = () => {
+  const handleSubmit = (allowAutoBudget = false) => {
     const trimmed = prompt.trim();
     if (!trimmed) return;
+
+    const service = inferServiceFromPrompt(trimmed);
+    const parsedBudget = extractMaxBudget(trimmed);
+
+    if (!parsedBudget && !allowAutoBudget) {
+      setBudgetWarningOpen(true);
+      return;
+    }
+
+    const budget = parsedBudget ?? 200;
     setLastPrompt(trimmed);
+    setBudgetWarningOpen(false);
+
+    setNegotiateParams({
+      service,
+      budget,
+      urgency: 3,
+      aggression: 3,
+      notes: trimmed,
+    });
+
     navigate('/customer/agents');
   };
 
@@ -86,7 +137,7 @@ export function PromptPage() {
             <Sparkles className="size-4 text-primary-foreground" />
           </div>
           <span className="text-base font-semibold tracking-tight text-foreground">
-            Agent Place
+            AgentPlace
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -197,7 +248,7 @@ export function PromptPage() {
             </div>
 
             <Button
-              onClick={handleSubmit}
+              onClick={() => handleSubmit()}
               disabled={!prompt.trim()}
               size="lg"
               className="w-full rounded-xl text-base font-medium gap-2"
@@ -225,7 +276,6 @@ export function PromptPage() {
               <div className="rounded-lg bg-destructive/10 text-destructive text-sm px-3 py-2 space-y-1">
                 <p className="font-medium">Could not load customers</p>
                 <p className="text-xs">{dataError.customers}</p>
-                <p className="text-xs opacity-90">Check table name (ConsumerData), RLS policies, and SUPABASE_SETUP.md.</p>
               </div>
             )}
             <Input
@@ -236,8 +286,7 @@ export function PromptPage() {
             />
             {sortedCustomers.length === 0 && !dataError?.customers ? (
               <div className="text-sm text-muted-foreground py-4 text-center space-y-1">
-                <p>No customers loaded. You have data in Supabase?</p>
-                <p className="text-xs">If yes, RLS may be blocking SELECT. Run in SQL Editor: ALTER TABLE public.&quot;ConsumerData&quot; DISABLE ROW LEVEL SECURITY;</p>
+                <p>No consumers yet. Create one below to get started.</p>
               </div>
             ) : sortedCustomers.length === 0 ? null : (
             <div className="max-h-[200px] overflow-auto space-y-1">
@@ -273,6 +322,31 @@ export function PromptPage() {
               />
               <Button onClick={handleCreateCustomer} disabled={!newCustomerName.trim() || creatingCustomer}>
                 {creatingCustomer ? 'Creating…' : 'Create'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Budget warning dialog */}
+      <Dialog open={budgetWarningOpen} onOpenChange={setBudgetWarningOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add a max price?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-muted-foreground">
+              No maximum price was detected in your request. Add a max budget to better guide negotiation.
+            </p>
+            <p className="text-muted-foreground">
+              If you continue, the agent will pick a budget for this request.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="outline" onClick={() => setBudgetWarningOpen(false)}>
+                I&apos;ll add a max price
+              </Button>
+              <Button onClick={() => handleSubmit(true)}>
+                Let agent pick for me
               </Button>
             </div>
           </div>

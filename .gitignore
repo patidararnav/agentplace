@@ -1,1 +1,14 @@
-node_modules
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+private_keys.json
+
+# Frontend
+node_modules/
+dist/
+.DS_Store
+
+# MCP
+_supabase_sim_config.json

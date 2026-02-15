@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { MapContainer, TileLayer, useMap, CircleMarker, Polyline } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Loader2, Sparkles } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { useApp } from '@/context/AppContext';
-import { mockVendors } from '@/data/mock';
 import type { MapVendor } from '@/types';
 
 delete (L.Icon.Default.prototype as unknown as { _getIconUrl?: unknown })._getIconUrl;
@@ -41,7 +39,6 @@ function MapCenter({ center }: { center: [number, number] }) {
 }
 
 export function MapViewPage() {
-  const navigate = useNavigate();
   const { userLocation, lastPrompt } = useApp();
   const [vendors, setVendors] = useState<MapVendor[]>([]);
   const [activeCount, setActiveCount] = useState(0);
@@ -51,40 +48,12 @@ export function MapViewPage() {
     ? [userLocation.lat, userLocation.lng]
     : [37.4419, -122.143];
 
+  // Map page is placeholder — no mock timers. Real orchestration uses AgentMatchingPage.
   useEffect(() => {
-    setVendors(mockVendors.map((v) => ({ ...v, active: true })));
-    setActiveCount(mockVendors.length);
+    setVendors([]);
+    setActiveCount(0);
+    setStatusText('Use /customer/agents for real-time orchestration');
   }, []);
-
-  useEffect(() => {
-    const t1 = setTimeout(() => {
-      setVendors((prev) => prev.map((v, i) => (i === 0 ? { ...v, active: false } : v)));
-      setActiveCount(4);
-      setStatusText('Agents finalizing negotiations...');
-    }, 3000);
-    const t2 = setTimeout(() => {
-      setVendors((prev) => prev.map((v, i) => (i <= 1 ? { ...v, active: false } : v)));
-      setActiveCount(3);
-    }, 5000);
-    const t3 = setTimeout(() => {
-      setVendors((prev) => prev.map((v, i) => (i <= 2 ? { ...v, active: false } : v)));
-      setActiveCount(2);
-      setStatusText('Ranking results...');
-    }, 7000);
-    const t4 = setTimeout(() => {
-      setVendors((prev) => prev.map((v) => ({ ...v, active: false })));
-      setActiveCount(0);
-      setStatusText('Done — preparing results');
-    }, 8500);
-    const t5 = setTimeout(() => navigate('/customer/results'), 10000);
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
-      clearTimeout(t4);
-      clearTimeout(t5);
-    };
-  }, [navigate]);
 
   return (
     <div className="min-h-svh bg-background flex flex-col">
@@ -119,7 +88,7 @@ export function MapViewPage() {
             <div
               className="h-full bg-primary rounded-full transition-all duration-1000 ease-out"
               style={{
-                width: `${((mockVendors.length - activeCount) / mockVendors.length) * 100}%`,
+                width: `${vendors.length > 0 ? ((vendors.length - activeCount) / vendors.length) * 100 : 0}%`,
               }}
             />
           </div>

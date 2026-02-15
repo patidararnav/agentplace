@@ -5,19 +5,50 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { useApp } from "@/context/AppContext";
 
 export function NewServicePage() {
   const navigate = useNavigate();
+  const { selectedVendor } = useApp();
 
   const [serviceName, setServiceName] = useState("");
   const [jobType, setJobType] = useState("");
   const [price, setPrice] = useState("");
   const [durationMinutes, setDurationMinutes] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
 
-  function handleSubmit() {
-    setSubmitted(true);
-    setTimeout(() => navigate("/vendor"), 1500);
+  async function handleSubmit() {
+    if (!serviceName.trim() || !jobType.trim() || !hourlyRate.trim()) {
+      setError("All fields are required.");
+      return;
+    }
+    setError("");
+    setSubmitting(true);
+
+    try {
+      const res = await fetch("/api/vendors/service", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          vendor_name: selectedVendor?.name ?? "Unknown",
+          service_name: serviceName.trim(),
+          job_type: jobType.trim().toLowerCase(),
+          price: Number(hourlyRate) || 0,
+          duration_minutes: Number(durationMinutes) || 60,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `Server error: ${res.status}`);
+      }
+      setSubmitted(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create service");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   if (submitted) {
@@ -31,14 +62,17 @@ export function NewServicePage() {
             Service Created!
           </h2>
           <p className="text-muted-foreground">
-            Your vendor agent is now active and ready to negotiate.
+            Your vendor agent will include this service in future negotiations.
           </p>
           <div className="flex items-center justify-center gap-2 pt-2">
             <Bot className="h-4 w-4 text-primary animate-pulse" />
             <span className="text-sm text-primary font-medium">
-              Agent spinning up&hellip;
+              Agent updated
             </span>
           </div>
+          <Button variant="outline" onClick={() => navigate("/vendor")} className="mt-4">
+            Back to dashboard
+          </Button>
         </div>
       </div>
     );
@@ -72,6 +106,12 @@ export function NewServicePage() {
       </header>
 
       <main className="max-w-3xl mx-auto px-6 py-8 space-y-8">
+        {error && (
+          <div className="rounded-lg bg-destructive/10 text-destructive text-sm px-4 py-2">
+            {error}
+          </div>
+        )}
+
         {/* Service Name */}
         <div className="space-y-2">
           <Label htmlFor="service-name">Service Name</Label>
@@ -128,9 +168,9 @@ export function NewServicePage() {
         </div>
 
         {/* Submit */}
-        <Button className="w-full h-12 text-base" onClick={handleSubmit}>
+        <Button className="w-full h-12 text-base" onClick={handleSubmit} disabled={submitting}>
           <Bot className="h-5 w-5 mr-2" />
-          Create service
+          {submitting ? "Creating…" : "Create service"}
         </Button>
       </main>
     </div>

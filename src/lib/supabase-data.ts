@@ -5,9 +5,22 @@ const TABLE_VENDOR = import.meta.env.VITE_SUPABASE_TABLE_VENDOR ?? 'VendorData';
 const TABLE_CONSUMER = import.meta.env.VITE_SUPABASE_TABLE_CONSUMER ?? 'ConsumerData';
 const TABLE_JOBS = import.meta.env.VITE_SUPABASE_TABLE_JOBS ?? 'JobsData';
 
+const STORAGE_KEYS = {
+  vendors: 'agentplace_vendors',
+  consumers: 'agentplace_consumers',
+  jobs: 'agentplace_jobs',
+} as const;
+const STORAGE_VERSION_KEY = 'agentplace_storage_version';
+const STORAGE_VERSION = 'local-v1';
+
+function getStorage(): Storage | null {
+  if (typeof window === 'undefined') return null;
+  return window.localStorage;
+}
+
 function rowToVendor(row: Record<string, unknown>): VendorData {
   const jobTypes = (row.job_types as { type: string; price: number; duration_minutes: number }[]) ?? [];
-  const jobIds = Array.isArray(row.job_ids) ? row.job_ids as number[] : [];
+  const jobIds = Array.isArray(row.job_ids) ? (row.job_ids as number[]) : [];
   const reviews = Array.isArray(row.reviews) ? (row.reviews as string[]) : [];
   const avg = row.average_rating != null ? Number(row.average_rating) : undefined;
   const total = row.total_ratings != null ? Number(row.total_ratings) : undefined;
@@ -50,32 +63,52 @@ function rowToJob(row: Record<string, unknown>): JobData {
     status: (Number(row.status) ?? 1) as JobData['status'],
   };
 }
+  
+function ensureInitialized(): void {
+  const storage = getStorage();
+  if (!storage) return;
+  if (storage.getItem(STORAGE_VERSION_KEY) === STORAGE_VERSION) return;
+  storage.setItem(STORAGE_KEYS.vendors, '[]');
+  storage.setItem(STORAGE_KEYS.consumers, '[]');
+  storage.setItem(STORAGE_KEYS.jobs, '[]');
+  storage.setItem(STORAGE_VERSION_KEY, STORAGE_VERSION);
+}
+
+function readList<T>(key: string): T[] {
+  ensureInitialized();
+  const storage = getStorage();
+  if (!storage) return [];
+  const raw = storage.getItem(key);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeList<T>(key: string, value: T[]): void {
+  ensureInitialized();
+  const storage = getStorage();
+  if (!storage) return;
+  storage.setItem(key, JSON.stringify(value));
+}
 
 export type FetchResult<T> = { data: T[]; error?: undefined } | { data?: undefined; error: string };
 
-/** Fetches vendors, most recent first (highest vendor_id). Tries VendorData then vendor_data if first fails (e.g. wrong table name). */
+/** Fetches vendors from Supabase table public."VendorData". Falls back to localStorage only on error (e.g. table missing). */
 export async function fetchVendors(): Promise<FetchResult<VendorData>> {
-  const tableNames = [TABLE_VENDOR];
-  if (TABLE_VENDOR === 'VendorData') tableNames.push('vendor_data');
-
-  for (const tableName of tableNames) {
-    const { data, error } = await supabase
-      .from(tableName)
-      .select('*')
-      .order('vendor_id', { ascending: false });
-    if (!error) {
-      return { data: (data ?? []).map((row) => rowToVendor(row as Record<string, unknown>)) };
-    }
-    const msg = `${error.message}${error.code ? ` [${error.code}]` : ''}`;
-    const isNotFound =
-      error.code === '42P01' ||
-      /does not exist|relation.*not found/i.test(error.message);
-    if (!isNotFound || tableName === tableNames[tableNames.length - 1]) {
-      console.warn('Supabase vendors:', msg);
-      return { error: msg };
-    }
+  const { data, error } = await supabase
+    .from(TABLE_VENDOR)
+    .select('*')
+    .order('vendor_id', { ascending: false });
+  if (!error) {
+    return { data: (data ?? []).map((row) => rowToVendor(row as Record<string, unknown>)) };
   }
-  return { error: 'Could not load vendors' };
+  console.warn('Supabase vendors:', error.message);
+  const local = readList<VendorData>(STORAGE_KEYS.vendors).sort((a, b) => b.vendor_id - a.vendor_id);
+  return { data: local };
 }
 
 /** Fetches customers, most jobs first then by name. */
@@ -93,56 +126,22 @@ export async function fetchCustomers(): Promise<FetchResult<CustomerData>> {
   return { data: (data ?? []).map((row) => rowToCustomer(row as Record<string, unknown>)) };
 }
 
-/** Fetches all jobs from Jobs table. Tries JobsData then jobs_data if first fails. */
+/** Fetches all jobs from browser localStorage. */
 export async function fetchJobs(): Promise<FetchResult<JobData>> {
-  const tableNames = [TABLE_JOBS];
-  if (TABLE_JOBS === 'JobsData') tableNames.push('jobs_data');
-
-  for (const tableName of tableNames) {
-    const { data, error } = await supabase.from(tableName).select('*').order('job_id');
-    if (!error) {
-      return { data: (data ?? []).map((row) => rowToJob(row as Record<string, unknown>)) };
-    }
-    const msg = `${error.message}${error.code ? ` [${error.code}]` : ''}`;
-    const isNotFound =
-      error.code === '42P01' ||
-      /does not exist|relation.*not found/i.test(error.message);
-    if (!isNotFound || tableName === tableNames[tableNames.length - 1]) {
-      console.warn('Supabase jobs:', msg);
-      return { error: msg };
-    }
-  }
-  return { error: 'Could not load jobs' };
+  const data = readList<JobData>(STORAGE_KEYS.jobs).sort((a, b) => a.job_id - b.job_id);
+  return { data };
 }
 
-/** Fetches jobs for one vendor: by job_ids if provided, otherwise by vendor_id. Uses JobsData then jobs_data. */
+/** Fetches jobs for one vendor from browser localStorage. */
 export async function fetchJobsForVendor(
   vendorId: number,
   jobIds?: number[]
 ): Promise<JobData[]> {
-  const tableNames = [TABLE_JOBS];
-  if (TABLE_JOBS === 'JobsData') tableNames.push('jobs_data');
-
-  for (const tableName of tableNames) {
-    let query = supabase.from(tableName).select('*');
-    if (jobIds && jobIds.length > 0) {
-      query = query.in('job_id', jobIds);
-    } else {
-      query = query.eq('vendor_id', vendorId);
-    }
-    const { data, error } = await query.order('job_id');
-    if (!error) {
-      return (data ?? []).map((row) => rowToJob(row as Record<string, unknown>));
-    }
-    const isNotFound =
-      error.code === '42P01' ||
-      /does not exist|relation.*not found/i.test(error.message);
-    if (!isNotFound || tableName === tableNames[tableNames.length - 1]) {
-      console.warn('Supabase fetchJobsForVendor:', error.message);
-      return [];
-    }
-  }
-  return [];
+  const jobs = readList<JobData>(STORAGE_KEYS.jobs);
+  const filtered = jobIds && jobIds.length > 0
+    ? jobs.filter((j) => jobIds.includes(j.job_id))
+    : jobs.filter((j) => j.vendor_id === vendorId);
+  return filtered.sort((a, b) => a.job_id - b.job_id);
 }
 
 /** Fetches jobs for one customer: by job_ids if provided, otherwise by consumer_name. Uses JobsData then jobs_data. */
@@ -175,32 +174,22 @@ export async function fetchJobsForCustomer(
   return [];
 }
 
-/** Updates a job's status (e.g. 5 = Booked). Tries JobsData then jobs_data. */
+/** Updates a job's status (e.g. 5 = Booked) in browser localStorage. */
 export async function updateJobStatus(
   jobId: number,
   status: number
 ): Promise<{ ok: true } | { error: string }> {
-  const tableNames = [TABLE_JOBS];
-  if (TABLE_JOBS === 'JobsData') tableNames.push('jobs_data');
-
-  for (const tableName of tableNames) {
-    const { error } = await supabase
-      .from(tableName)
-      .update({ status })
-      .eq('job_id', jobId);
-    if (!error) return { ok: true };
-    const isNotFound =
-      error.code === '42P01' ||
-      /does not exist|relation.*not found/i.test(error.message);
-    if (!isNotFound || tableName === tableNames[tableNames.length - 1]) {
-      console.warn('Supabase updateJobStatus:', error.message);
-      return { error: error.message };
-    }
+  const jobs = readList<JobData>(STORAGE_KEYS.jobs);
+  const idx = jobs.findIndex((j) => j.job_id === jobId);
+  if (idx === -1) {
+    return { error: `Job ${jobId} not found` };
   }
-  return { error: 'Could not update job' };
+  jobs[idx] = { ...jobs[idx], status: status as JobData['status'] };
+  writeList(STORAGE_KEYS.jobs, jobs);
+  return { ok: true };
 }
 
-/** Insert new vendor; returns normalized VendorData or null. Caller must provide vendor_id if table has no default. */
+/** Insert new vendor into Supabase public."VendorData". Falls back to localStorage on error. */
 export async function insertVendor(payload: {
   vendor_id?: number;
   name: string;
@@ -215,7 +204,38 @@ export async function insertVendor(payload: {
   average_rating?: string | number | null;
   total_ratings?: string | number | null;
 }): Promise<VendorData | null> {
-  const row: Record<string, unknown> = {
+  let nextId = payload.vendor_id;
+  if (nextId == null) {
+    const { data: existing } = await supabase
+      .from(TABLE_VENDOR)
+      .select('vendor_id')
+      .order('vendor_id', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    nextId = existing?.vendor_id != null ? Number(existing.vendor_id) + 1 : 1;
+  }
+  const row = {
+    vendor_id: nextId,
+    name: payload.name,
+    weekly_availability: payload.weekly_availability,
+    max_distance_miles: payload.max_distance_miles,
+    home_location: payload.home_location,
+    experience_years: payload.experience_years,
+    negotiation_aggression: payload.negotiation_aggression,
+    job_types: payload.job_types ?? [],
+    job_ids: payload.job_ids ?? [],
+    reviews: payload.reviews ?? [],
+    average_rating: payload.average_rating != null ? String(payload.average_rating) : null,
+    total_ratings: payload.total_ratings != null ? String(payload.total_ratings) : null,
+  };
+  const { data, error } = await supabase.from(TABLE_VENDOR).insert(row).select().single();
+  if (!error && data) {
+    return rowToVendor(data as Record<string, unknown>);
+  }
+  if (error) console.warn('Supabase insert vendor:', error.message);
+  const vendors = readList<VendorData>(STORAGE_KEYS.vendors);
+  const created: VendorData = {
+    vendor_id: nextId,
     name: payload.name,
     weekly_availability: payload.weekly_availability,
     max_distance_miles: payload.max_distance_miles,
@@ -225,16 +245,12 @@ export async function insertVendor(payload: {
     job_types: payload.job_types,
     job_ids: payload.job_ids ?? [],
     reviews: payload.reviews ?? [],
-    average_rating: payload.average_rating != null ? String(payload.average_rating) : null,
-    total_ratings: payload.total_ratings != null ? String(payload.total_ratings) : null,
+    average_rating: payload.average_rating != null ? Number(payload.average_rating) : undefined,
+    total_ratings: payload.total_ratings != null ? Number(payload.total_ratings) : undefined,
   };
-  if (payload.vendor_id != null) row.vendor_id = payload.vendor_id;
-  const { data, error } = await supabase.from(TABLE_VENDOR).insert(row).select().single();
-  if (error) {
-    console.warn('Supabase insert vendor:', error.message, error.details, error.hint);
-    return null;
-  }
-  return data ? rowToVendor(data as Record<string, unknown>) : null;
+  vendors.push(created);
+  writeList(STORAGE_KEYS.vendors, vendors);
+  return created;
 }
 
 /** Update existing vendor by vendor_id. Returns updated VendorData or null. */
@@ -300,7 +316,7 @@ export async function insertCustomer(payload: {
   return data ? { data: rowToCustomer(data as Record<string, unknown>) } : { error: 'No data returned' };
 }
 
-/** Log Supabase connection/table errors for debugging. Call from app init if needed. */
+/** Local mode status helper. */
 export async function checkSupabaseAccess(): Promise<{ ok: boolean; message: string }> {
   const { error } = await supabase.from(TABLE_CONSUMER).select('consumer_name').limit(1);
   if (error) {

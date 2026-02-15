@@ -65,14 +65,14 @@ export function FulfillmentPage() {
     setTimeout(() => navigate(isVendorTracking ? '/vendor/calendar' : fromCalendar ? '/customer/calendar' : '/'), 2000);
   };
 
-  const displayTitle = job?.jobType ?? 'Kitchen sink repair';
-  const displayVendor = job?.vendorName ?? 'QuickFix Plumbing';
+  const displayTitle = job?.jobType ?? 'Untitled job';
+  const displayVendor = job?.vendorName ?? 'Unknown vendor';
   const displayCustomer = job?.customerName ?? '';
-  const displayPrice = job?.price ?? 285;
+  const displayPrice = job?.price ?? 0;
   const displayDate = job?.dateTime
     ? new Date(job.dateTime).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-    : 'Tue Feb 18, 9:00 AM';
-  const displayDuration = job?.durationMinutes ?? 90;
+    : 'Not scheduled';
+  const displayDuration = job?.durationMinutes ?? 0;
 
   return (
     <div className="min-h-svh bg-background flex flex-col">

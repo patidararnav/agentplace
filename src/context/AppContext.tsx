@@ -1,7 +1,17 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
-import type { UserLocation, VendorData, CustomerData, JobData } from '@/types';
-import { defaultUserLocation } from '@/data/mock';
+
+import type { UserLocation, VendorData, CustomerData, JobData, VendorQuote } from '@/types';
 import { fetchVendors, fetchCustomers, fetchJobs } from '@/lib/supabase-data';
+import type { NegotiateParams } from '@/lib/api';
+
+/** Negotiation results stored after the agent orchestration completes */
+export interface NegotiationResults {
+  quotes: VendorQuote[];
+  stats: { vendorsSearched: number; vendorsNegotiated: number; avgSavings: number };
+  outcome: string;
+  winner: string;
+  winnerPrice: number;
+}
 
 interface AppState {
   userLocation: UserLocation | null;
@@ -12,6 +22,7 @@ interface AppState {
   customers: CustomerData[];
   jobs: JobData[];
   dataLoading: boolean;
+  
   /** Set when fetch fails (e.g. RLS, wrong table name). Empty string when OK. */
   dataError: { vendors?: string; customers?: string; jobs?: string };
   refetchVendors: () => Promise<void>;
@@ -22,6 +33,12 @@ interface AppState {
   setSelectedVendor: (v: VendorData | null) => void;
   selectedCustomer: CustomerData | null;
   setSelectedCustomer: (c: CustomerData | null) => void;
+  /** Parameters for the current negotiation (set from PromptPage) */
+  negotiateParams: NegotiateParams | null;
+  setNegotiateParams: (p: NegotiateParams | null) => void;
+  /** Results from the completed negotiation (set from AgentMatchingPage) */
+  negotiationResults: NegotiationResults | null;
+  setNegotiationResults: (r: NegotiationResults | null) => void;
 }
 
 const STORAGE_KEY_VENDOR = 'agentplace_selected_vendor_id';
@@ -30,7 +47,7 @@ const STORAGE_KEY_CUSTOMER = 'agentplace_selected_customer_name';
 const AppContext = createContext<AppState | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [userLocation, setUserLocation] = useState<UserLocation | null>(defaultUserLocation);
+  const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
   const [lastPrompt, setLastPrompt] = useState('');
   const [vendors, setVendors] = useState<VendorData[]>([]);
   const [customers, setCustomers] = useState<CustomerData[]>([]);
@@ -39,6 +56,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [dataError, setDataError] = useState<{ vendors?: string; customers?: string; jobs?: string }>({});
   const [selectedVendor, setSelectedVendorState] = useState<VendorData | null>(null);
   const [selectedCustomer, setSelectedCustomerState] = useState<CustomerData | null>(null);
+  const [negotiateParams, setNegotiateParams] = useState<NegotiateParams | null>(null);
+  const [negotiationResults, setNegotiationResults] = useState<NegotiationResults | null>(null);
 
   const setSelectedVendor = useCallback((v: VendorData | null) => {
     setSelectedVendorState(v);
@@ -142,6 +161,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setSelectedVendor,
         selectedCustomer,
         setSelectedCustomer,
+        negotiateParams,
+        setNegotiateParams,
+        negotiationResults,
+        setNegotiationResults,
       }}
     >
       {children}
