@@ -167,6 +167,31 @@ export async function fetchJobsForVendor(
   return filtered.sort((a, b) => a.job_id - b.job_id);
 }
 
+/** Fetches a single job by job_id from Supabase (tries TABLE_JOBS then jobs_data). Returns null if not found. */
+export async function fetchJobById(jobId: number): Promise<JobData | null> {
+  const tableNames = [TABLE_JOBS];
+  if (TABLE_JOBS === 'JobsData') tableNames.push('jobs_data');
+
+  for (const tableName of tableNames) {
+    const { data, error } = await supabase
+      .from(tableName)
+      .select('*')
+      .eq('job_id', jobId)
+      .maybeSingle();
+    if (!error && data) {
+      return rowToJob(data as Record<string, unknown>);
+    }
+    const isNotFound =
+      error?.code === '42P01' || /does not exist|relation.*not found/i.test(error?.message ?? '');
+    if (!isNotFound && error) {
+      console.warn('Supabase fetchJobById:', error.message);
+      return null;
+    }
+  }
+  const local = readList<JobData>(STORAGE_KEYS.jobs).find((j) => j.job_id === jobId);
+  return local ?? null;
+}
+
 /** Fetches jobs for one customer: by job_ids if provided, otherwise by consumer_name. Uses JobsData then jobs_data. */
 export async function fetchJobsForCustomer(
   consumerName: string,
@@ -197,11 +222,48 @@ export async function fetchJobsForCustomer(
   return [];
 }
 
-/** Updates a job's status (e.g. 5 = Booked) in browser localStorage. */
+/** Updates a job's status (e.g. 5 = Booked). Calls backend API (writes to Supabase with service key), then syncs localStorage. */
 export async function updateJobStatus(
   jobId: number,
   status: number
 ): Promise<{ ok: true } | { error: string }> {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data?.ok) {
+      // Backend updated Supabase; sync localStorage
+      const jobs = readList<JobData>(STORAGE_KEYS.jobs);
+      const idx = jobs.findIndex((j) => j.job_id === jobId);
+      if (idx !== -1) {
+        jobs[idx] = { ...jobs[idx], status: status as JobData['status'] };
+        writeList(STORAGE_KEYS.jobs, jobs);
+      }
+      return { ok: true };
+    }
+  } catch (e) {
+    console.warn('updateJobStatus API:', e);
+  }
+
+  // Fallback: try direct Supabase update (may fail due to RLS) then localStorage
+  const tableNames = [TABLE_JOBS];
+  if (TABLE_JOBS === 'JobsData') tableNames.push('jobs_data');
+  for (const tableName of tableNames) {
+    const { error } = await supabase
+      .from(tableName)
+      .update({ status })
+      .eq('job_id', jobId);
+    if (!error) break;
+    const isNotFound = error.code === '42P01' || /does not exist|relation.*not found/i.test(error.message);
+    if (!isNotFound) {
+      console.warn('Supabase updateJobStatus:', error.message);
+      break;
+    }
+  }
+
   const jobs = readList<JobData>(STORAGE_KEYS.jobs);
   const idx = jobs.findIndex((j) => j.job_id === jobId);
   if (idx === -1) {

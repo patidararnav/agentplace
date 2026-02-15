@@ -683,3 +683,21 @@ async def add_vendor_service(req: AddServiceRequest) -> Dict[str, Any]:
 @app.get("/api/health")
 async def health() -> Dict[str, str]:
     return {"status": "ok", "orchestrator": _orchestrator_address}
+
+
+class UpdateJobStatusRequest(BaseModel):
+    status: int
+
+
+@app.patch("/api/jobs/{job_id}/status")
+async def update_job_status(job_id: int, req: UpdateJobStatusRequest) -> Dict[str, Any]:
+    """Update a job's status in Supabase (uses service key so it persists)."""
+    try:
+        from db_helpers import update_job_status as _update_job_status
+        ok = _update_job_status(job_id, req.status)
+        if ok:
+            return {"ok": True, "job_id": job_id, "status": req.status}
+        return {"ok": False, "error": "Update failed"}
+    except Exception as e:
+        log.warning("update_job_status %s: %s", job_id, e)
+        return {"ok": False, "error": str(e)}

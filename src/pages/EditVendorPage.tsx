@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { updateVendor } from "@/lib/supabase-data";
+import { geocodeAddress, reverseGeocode } from "@/lib/geocode";
 import { useApp } from "@/context/AppContext";
 
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
@@ -29,8 +30,6 @@ function vendorToFormState(v: { name: string; max_distance_miles: number; home_l
   return {
     name: v.name ?? "",
     maxDistanceMiles: String(v.max_distance_miles ?? 25),
-    lat: String(v.home_location?.lat ?? "37.7749"),
-    lng: String(v.home_location?.lng ?? "-122.4194"),
     experienceYears: String(v.experience_years ?? 5),
     negotiationAggression: String(v.negotiation_aggression ?? 1),
     weekly,
@@ -44,8 +43,7 @@ export function EditVendorPage() {
 
   const [name, setName] = useState("");
   const [maxDistanceMiles, setMaxDistanceMiles] = useState("25");
-  const [lat, setLat] = useState("37.7749");
-  const [lng, setLng] = useState("-122.4194");
+  const [address, setAddress] = useState("");
   const [experienceYears, setExperienceYears] = useState("5");
   const [negotiationAggression, setNegotiationAggression] = useState("1");
   const [weekly, setWeekly] = useState<Record<string, string[] | null>>(defaultWeekly);
@@ -62,14 +60,23 @@ export function EditVendorPage() {
     const s = vendorToFormState(selectedVendor);
     setName(s.name);
     setMaxDistanceMiles(s.maxDistanceMiles);
-    setLat(s.lat);
-    setLng(s.lng);
     setExperienceYears(s.experienceYears);
     setNegotiationAggression(s.negotiationAggression);
     setWeekly(s.weekly);
     setJobTypes(s.jobTypes);
+    setAddress("");
     setInitialized(true);
   }, [selectedVendor, navigate]);
+
+  useEffect(() => {
+    if (!selectedVendor || !initialized) return;
+    const { lat, lng } = selectedVendor.home_location ?? { lat: 37.7749, lng: -122.4194 };
+    let cancelled = false;
+    reverseGeocode(lat, lng).then((addr) => {
+      if (!cancelled && addr) setAddress(addr);
+    });
+    return () => { cancelled = true; };
+  }, [selectedVendor?.vendor_id, initialized]);
 
   function addJobType() {
     setJobTypes((prev) => [...prev, { type: "", price: "", duration_minutes: "" }]);
@@ -117,10 +124,24 @@ export function EditVendorPage() {
       return;
     }
 
+    const trimmedAddress = address.trim();
+    if (!trimmedAddress) {
+      setError("Home address is required.");
+      return;
+    }
+
+    setSubmitting(true);
+    const location = await geocodeAddress(trimmedAddress);
+    if (!location) {
+      setSubmitting(false);
+      setError("Could not find that address. Try a full address (e.g. street, city, state/country).");
+      return;
+    }
+
     const payload = {
       name: trimName,
       max_distance_miles: Number(maxDistanceMiles) || 25,
-      home_location: { lat: Number(lat) || 0, lng: Number(lng) || 0 },
+      home_location: { lat: location.lat, lng: location.lng },
       experience_years: Number(experienceYears) || 0,
       negotiation_aggression: Number(negotiationAggression) || 1,
       weekly_availability: weekly,
@@ -131,7 +152,6 @@ export function EditVendorPage() {
       total_ratings: selectedVendor.total_ratings,
     };
 
-    setSubmitting(true);
     const updated = await updateVendor(selectedVendor.vendor_id, payload);
     setSubmitting(false);
     if (!updated) {
@@ -208,27 +228,18 @@ export function EditVendorPage() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label htmlFor="lat">Home latitude</Label>
-                  <Input
-                    id="lat"
-                    type="number"
-                    step="any"
-                    value={lat}
-                    onChange={(e) => setLat(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="lng">Home longitude</Label>
-                  <Input
-                    id="lng"
-                    type="number"
-                    step="any"
-                    value={lng}
-                    onChange={(e) => setLng(e.target.value)}
-                  />
-                </div>
+              <div>
+                <Label htmlFor="address">Home address</Label>
+                <Input
+                  id="address"
+                  type="text"
+                  value={address}
+                  onChange={(e) => setAddress(e.target.value)}
+                  placeholder="e.g. 123 Main St, San Francisco, CA"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Current location is looked up from saved coordinates. Change the address to update location.
+                </p>
               </div>
               <div>
                 <Label htmlFor="negotiation">Negotiation aggression (1–5)</Label>

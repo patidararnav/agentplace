@@ -440,6 +440,7 @@ outer: for (const cat of CATEGORIES) {
     const { reviews, average_rating, total_ratings } = generateVendorReviews();
     const reviewsJson = JSON.stringify(reviews);
     const jobIdsJson = JSON.stringify(jobIdsByVendor[vendorId] || []);
+    const strategy = rnd([1,2,3]);
 
     const row = [
       vendorId,
@@ -449,6 +450,7 @@ outer: for (const cat of CATEGORIES) {
       homeLocation,
       expYears,
       aggression,
+      strategy,
       jobTypesJson,
       jobIdsJson,
       reviewsJson,

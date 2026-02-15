@@ -206,6 +206,11 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 3. **Add services** — add new service types to an existing vendor.
 4. The vendor agent is now active and will participate in future customer negotiations.
 
+### Data freshness and refresh
+
+- **Vendor calendar**, **customer calendar**, and **job tracking** screens query Supabase and **poll every 5 seconds** so changes (e.g. from another tab or device) appear without refreshing the page.
+- A full page refresh does refetch vendors and customers from the database; the calendar and tracking screens also refetch their data on load. The global "jobs" list in app context is backed by localStorage, so for the latest job data use the calendar or tracking views, which read from Supabase.
+
 ### What shows in the terminal
 
 Every agent action is logged with color codes:
