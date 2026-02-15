@@ -120,7 +120,13 @@ def should_accept_vendor_offer(
 def max_rounds_for_urgency(urgency: int) -> int:
     # Negotiation round budget is fixed regardless of urgency.
     _ = urgency
-    return 8
+    max_rounds = os.getenv("MAX_NEGOTIATION_ROUNDS")
+    if max_rounds is None:
+        return 8
+    try:
+        return max(1, int(max_rounds))
+    except (TypeError, ValueError):
+        return 8
 
 
 def customer_offer_utility(

@@ -4,6 +4,7 @@ import {
   Sparkles, CheckCircle2, Circle, Clock, CreditCard,
   Star, ArrowLeft, MapPin, ShieldCheck, Loader2, Play,
 } from 'lucide-react';
+import { BrandLogo } from '@/components/BrandLogo';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -306,9 +307,7 @@ export function FulfillmentPage() {
           <Button variant="ghost" size="icon" className="size-8" onClick={handleBack}>
             <ArrowLeft className="size-4" />
           </Button>
-          <div className="size-8 rounded-lg bg-primary flex items-center justify-center">
-            <Sparkles className="size-4 text-primary-foreground" />
-          </div>
+          <BrandLogo className="h-12 w-12" />
           <div>
             <h1 className="text-base font-semibold text-foreground">Job Tracking</h1>
             <p className="text-xs text-muted-foreground">

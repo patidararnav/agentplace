@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Pencil, Plus, ArrowLeft, Calendar, Wrench, TrendingUp, Star, Briefcase, Search, Loader2, Trash2 } from 'lucide-react';
+import { BrandLogo } from '@/components/BrandLogo';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -97,9 +98,7 @@ export function VendorDashboard() {
             <Button variant="ghost" size="icon" className="size-8" onClick={() => navigate('/')}>
               <ArrowLeft className="size-4" />
             </Button>
-            <div className="size-8 rounded-lg bg-primary flex items-center justify-center">
-              <Wrench className="size-4 text-primary-foreground" />
-            </div>
+            <BrandLogo className="h-12 w-12" />
             <div>
               <h1 className="text-base font-semibold text-foreground">Vendor Portal</h1>
               <p className="text-xs text-muted-foreground">

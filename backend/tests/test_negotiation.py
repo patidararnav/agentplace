@@ -10,7 +10,11 @@ from customer import (
     should_accept_vendor_offer,
     target_price_for_days,
 )
-from orchestrator import build_vendor_slot_candidates, _customer_utility_score
+from orchestrator import (
+    _customer_utility_score,
+    build_vendor_slot_candidates,
+    should_force_last_round_deal,
+)
 from vendor import (
     _diverse_shortlist_for_negotiation,
     _sanitize_vendor_utterance,
@@ -177,6 +181,26 @@ class NegotiationTests(unittest.TestCase):
                 days_ahead=0,
                 round_no=8,
                 max_rounds=8,
+            )
+        )
+
+    def test_orchestrator_forces_last_round_deal_when_within_budget(self):
+        self.assertTrue(
+            should_force_last_round_deal(
+                action="counter",
+                rounds=8,
+                max_rounds=8,
+                latest_vendor_price=173,
+                budget=199,
+            )
+        )
+        self.assertFalse(
+            should_force_last_round_deal(
+                action="counter",
+                rounds=8,
+                max_rounds=8,
+                latest_vendor_price=205,
+                budget=199,
             )
         )
 

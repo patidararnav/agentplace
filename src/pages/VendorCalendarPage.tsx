@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, ArrowLeft, Wrench, Clock, DollarSign, Trash2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ArrowLeft, Clock, DollarSign, Trash2 } from 'lucide-react';
+import { BrandLogo } from '@/components/BrandLogo';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { useApp } from '@/context/AppContext';
@@ -144,9 +145,7 @@ export function VendorCalendarPage() {
             <Button variant="ghost" size="icon" className="size-8" onClick={() => navigate('/vendor')}>
               <ArrowLeft className="size-4" />
             </Button>
-            <div className="size-8 rounded-lg bg-primary flex items-center justify-center">
-              <Wrench className="size-4 text-primary-foreground" />
-            </div>
+            <BrandLogo className="h-12 w-12" />
             <div>
               <h1 className="text-base font-semibold text-foreground">Vendor Calendar</h1>
               <p className="text-xs text-muted-foreground">Select a vendor from the dashboard first.</p>
@@ -169,9 +168,7 @@ export function VendorCalendarPage() {
           <Button variant="ghost" size="icon" className="size-8" onClick={() => navigate('/vendor')}>
             <ArrowLeft className="size-4" />
           </Button>
-          <div className="size-8 rounded-lg bg-primary flex items-center justify-center">
-            <Wrench className="size-4 text-primary-foreground" />
-          </div>
+          <BrandLogo className="h-12 w-12" />
           <div>
             <h1 className="text-base font-semibold text-foreground">Vendor Calendar</h1>
             <p className="text-xs text-muted-foreground">

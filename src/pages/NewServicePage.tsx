@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Sparkles, Bot, Check } from "lucide-react";
+import { ArrowLeft, Bot, Check } from "lucide-react";
+import { BrandLogo } from '@/components/BrandLogo';
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -56,7 +57,7 @@ export function NewServicePage() {
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center space-y-4 animate-in fade-in zoom-in-95 duration-300">
           <div className="mx-auto w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center">
-            <Check className="h-8 w-8 text-primary" />
+            <Check className="h-10 w-10 text-primary" />
           </div>
           <h2 className="text-2xl font-bold text-foreground">
             Service Created!
@@ -92,9 +93,7 @@ export function NewServicePage() {
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary text-primary-foreground">
-              <Sparkles className="h-5 w-5" />
-            </div>
+            <BrandLogo className="h-12 w-12" />
             <div>
               <h1 className="text-lg font-semibold text-foreground leading-tight">
                 AgentPlace

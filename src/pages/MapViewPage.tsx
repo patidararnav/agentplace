@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { MapContainer, TileLayer, useMap, CircleMarker, Polyline } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { Loader2, Sparkles } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
+import { BrandLogo } from '@/components/BrandLogo';
 import { Badge } from '@/components/ui/badge';
 import { useApp } from '@/context/AppContext';
 import type { MapVendor } from '@/types';
@@ -60,9 +61,7 @@ export function MapViewPage() {
       <header className="px-6 py-4 flex-shrink-0 border-b border-border/40">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="size-8 rounded-lg bg-primary flex items-center justify-center">
-              <Sparkles className="size-4 text-primary-foreground" />
-            </div>
+            <BrandLogo className="h-12 w-12" />
             <div>
               <h1 className="text-base font-semibold text-foreground">AgentPlace</h1>
               {lastPrompt && (

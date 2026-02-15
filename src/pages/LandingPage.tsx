@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, Sparkles, Wrench, Shield, Zap, Brain, CreditCard, Star } from 'lucide-react';
+import { BrandLogo } from '@/components/BrandLogo';
 import { Button } from '@/components/ui/button';
 
 const AGENT_FEATURES = [
@@ -18,9 +19,7 @@ export function LandingPage() {
       {/* Nav */}
       <nav className="px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <div className="size-8 rounded-lg bg-primary flex items-center justify-center">
-            <Sparkles className="size-4 text-primary-foreground" />
-          </div>
+          <BrandLogo className="h-12 w-12" />
           <span className="text-base font-semibold tracking-tight text-foreground">
             AgentPlace
           </span>

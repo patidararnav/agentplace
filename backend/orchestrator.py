@@ -37,6 +37,15 @@ from chat_utils import (
 from vendor_selector import VendorSelectionError, VendorSelectorAgent
 
 
+# ─── Shared env utilities ─────────────────────────────────────────────────────
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return default
+
+
 # ─── Convergence Logic (pure / importable) ───────────────────────────────
 
 CONVERGENCE_SYSTEM_PROMPT = """\
@@ -252,6 +261,24 @@ async def check_convergence(
         fallback="CONTINUE|0|LLM unavailable, continuing.",
     )
     return parse_llm_decision(raw)
+
+
+def should_force_last_round_deal(
+    *,
+    action: str,
+    rounds: int,
+    max_rounds: int,
+    latest_vendor_price: int,
+    budget: int,
+) -> bool:
+    """Auto-accept final-round offers when they are within the customer's budget."""
+    if action != "counter":
+        return False
+    if int(rounds) < int(max_rounds):
+        return False
+    vendor_price = int(latest_vendor_price or 0)
+    hard_budget = max(1, int(budget or 1))
+    return 0 < vendor_price <= hard_budget
 
 
 def parse_request_text(text: str, fields: Dict[str, str]) -> Dict[str, Any]:
@@ -878,7 +905,7 @@ def _terminated_msg(rid: str, t: str) -> str:
 def create_orchestrator_agent(
     *,
     seed: str,
-    max_rounds: int = 8,
+    max_rounds: Optional[int] = None,
     consensus_mode: bool = False,
     port: Optional[int] = None,
     mailbox: bool = False,
@@ -903,8 +930,8 @@ def create_orchestrator_agent(
     service, price, rounds) invoked when a deal closes, e.g. to write to Supabase.
     """
 
-    # Keep round budget deterministic across all sessions.
-    max_rounds = 8
+    if max_rounds is None:
+        max_rounds = _int_env("MAX_NEGOTIATION_ROUNDS", 8)
 
     kwargs: Dict[str, Any] = {"name": "orchestrator", "seed": seed}
     if port is not None:
@@ -1184,7 +1211,7 @@ def create_orchestrator_agent(
                 await ctx.send(sender, make_chat_message(_terminated_msg(rid, err_text)))
                 return
             ctx.logger.info(
-                "REQUEST_IN  rid=%s  sender=%s  service=%s  budget=$%s  urgency=%s  city=%s  notes_len=%d  has_availability_header=%s",
+                "REQUEST_IN  rid=%s  sender=%s  service=%s  budget=$%s  urgency=%s  city=%s  notes_len=%d  availability_windows=%d  duration_minutes=%d",
                 rid,
                 sender,
                 data["service"],
@@ -1506,6 +1533,27 @@ def create_orchestrator_agent(
             except ValueError:
                 utility = 0.0
 
+            if should_force_last_round_deal(
+                action=action,
+                rounds=int(vs.get("rounds") or 0),
+                max_rounds=max_rounds,
+                latest_vendor_price=int(vs.get("latest_vendor_price") or 0),
+                budget=int(req.get("budget", 200)),
+            ):
+                action = "accept"
+                price = int(vs.get("latest_vendor_price") or price or 0)
+                start_iso = str(vs.get("latest_vendor_start_iso") or start_iso)
+                end_iso = str(vs.get("latest_vendor_end_iso") or end_iso)
+                offer_id = str(vs.get("latest_vendor_offer_id") or offer_id)
+                ctx.logger.info(
+                    "LAST_ROUND_AUTO_ACCEPT  rid=%s  vendor=%s  price=$%s  budget=$%s  rounds=%s",
+                    rid,
+                    vn,
+                    price,
+                    req.get("budget", 0),
+                    vs.get("rounds", 0),
+                )
+
             if action == "accept":
                 deal_price = price if price > 0 else int(vs.get("latest_vendor_price") or 0)
                 if deal_price <= 0:
@@ -1771,7 +1819,7 @@ if __name__ == "__main__":
 
     _agent = create_orchestrator_agent(
         seed=os.getenv("ORCHESTRATOR_SEED", "orchestrator_seed_treehacks_2026"),
-        max_rounds=int(os.getenv("MAX_NEGOTIATION_ROUNDS", "8")),
+        max_rounds=_int_env("MAX_NEGOTIATION_ROUNDS", 8),
         port=int(os.getenv("ORCHESTRATOR_PORT", "8001")),
         mailbox=True,
         network="testnet",

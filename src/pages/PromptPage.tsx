@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ArrowRight, Sparkles, Wrench, Calendar, Info, Trash2 } from 'lucide-react';
+import { ArrowRight, Wrench, Calendar, Info, Trash2 } from 'lucide-react';
+import { BrandLogo } from '@/components/BrandLogo';
 import { useApp } from '@/context/AppContext';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -430,9 +431,7 @@ export function PromptPage() {
       {/* Header: logo left, Vendor mode top right */}
       <header className="px-6 py-4 flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-2">
-          <div className="size-8 rounded-lg bg-primary flex items-center justify-center">
-            <Sparkles className="size-4 text-primary-foreground" />
-          </div>
+          <BrandLogo className="h-12 w-12" />
           <span className="text-base font-semibold tracking-tight text-foreground">
             AgentPlace
           </span>
@@ -818,7 +817,7 @@ export function PromptPage() {
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="h-8 w-8 text-destructive hover:text-destructive"
+                    className="h-10 w-10 text-destructive hover:text-destructive"
                     disabled={deletingCustomerName != null}
                     onClick={() => handleDeleteCustomer(c.consumer_name)}
                     aria-label={`Delete ${c.consumer_name}`}

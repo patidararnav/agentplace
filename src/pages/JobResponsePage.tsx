@@ -6,13 +6,13 @@ import {
   Star,
   Clock,
   DollarSign,
-  Sparkles,
   TrendingDown,
   ArrowLeft,
   Calendar,
   CalendarX2,
   MessageSquare,
 } from 'lucide-react';
+import { BrandLogo } from '@/components/BrandLogo';
 import { NegotiationChatModal } from '@/components/NegotiationChatModal';
 import { useApp } from '@/context/AppContext';
 import type { VendorQuote } from '@/types';
@@ -131,9 +131,7 @@ export function JobResponsePage() {
           >
             <ArrowLeft className="size-4" />
           </Button>
-          <div className="size-8 rounded-lg bg-primary flex items-center justify-center">
-            <Sparkles className="size-4 text-primary-foreground" />
-          </div>
+          <BrandLogo className="h-12 w-12" />
           <div>
             <h1 className="text-base font-semibold text-foreground">Your top quotes</h1>
             <p className="text-xs text-muted-foreground">

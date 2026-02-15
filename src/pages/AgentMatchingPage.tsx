@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Sparkles,
   CheckCircle2,
   Loader2,
   Circle,
@@ -14,6 +13,7 @@ import {
   Activity,
 } from 'lucide-react';
 import { NegotiationChatModal } from '@/components/NegotiationChatModal';
+import { BrandLogo } from '@/components/BrandLogo';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useApp } from '@/context/AppContext';
@@ -457,9 +457,7 @@ export function AgentMatchingPage() {
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-3">
-              <div className="size-9 rounded-xl bg-primary/90 flex items-center justify-center shadow-md shadow-white/15">
-                <Sparkles className="size-4 text-primary-foreground" />
-              </div>
+              <BrandLogo className="h-12 w-12" />
               <div className="min-w-0">
                 <h1 className="text-base md:text-lg font-semibold text-foreground">Vendor Negotiation Process</h1>
                 <p className="text-xs text-muted-foreground">Your agent network is actively handling live vendor conversations.</p>
@@ -487,10 +485,10 @@ export function AgentMatchingPage() {
               <span className="px-2.5 py-1 rounded-full border border-border/60 bg-card/50 text-muted-foreground">
                 Pipeline {doneCount}/{steps.length}
               </span>
-              <span className="px-2.5 py-1 rounded-full border border-orange-400/40 bg-orange-500/10 text-orange-300">Orange: Negotiating</span>
-              <span className="px-2.5 py-1 rounded-full border border-emerald-400/40 bg-emerald-500/10 text-emerald-300">Green: Deal Found</span>
-              <span className="px-2.5 py-1 rounded-full border border-zinc-400/40 bg-zinc-500/10 text-zinc-100">Gray: No Availability</span>
-              <span className="px-2.5 py-1 rounded-full border border-red-400/40 bg-red-500/10 text-red-300">Red: No Deal</span>
+              <span className="px-2.5 py-1 rounded-full border border-orange-400/40 bg-orange-500/10 text-orange-300">Negotiating</span>
+              <span className="px-2.5 py-1 rounded-full border border-emerald-400/40 bg-emerald-500/10 text-emerald-300">Deal Found</span>
+              <span className="px-2.5 py-1 rounded-full border border-zinc-400/40 bg-zinc-500/10 text-zinc-100">No Availability</span>
+              <span className="px-2.5 py-1 rounded-full border border-red-400/40 bg-red-500/10 text-red-300">No Deal</span>
             </div>
           </div>
 
