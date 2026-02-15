@@ -131,7 +131,9 @@ Edit `backend/.env` and fill in your keys:
 
 ```env
 AGENTVERSE_KEY=your_agentverse_key_here
-ASI1_API_KEY=your_asi1_api_key_here
+CLAUDE_API_KEY=your_claude_api_key_here
+# Optional (only if forcing ASI provider):
+# ASI1_API_KEY=your_asi1_api_key_here
 ```
 
 ### 3. SSL fix (macOS)
@@ -306,7 +308,9 @@ Create `backend/.env` from `backend/.env.example`. Key variables:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `AGENTVERSE_KEY` | Yes | Agentverse API key for orchestrator mailbox |
-| `ASI1_API_KEY` | Yes | ASI:One API key for LLM negotiation + convergence |
+| `CLAUDE_API_KEY` | Yes | Claude API key (default provider for LLM generation) |
+| `ASI1_API_KEY` | No | ASI:One key (used only when `LLM_PROVIDER=asi`) |
+| `LLM_PROVIDER` | No | Force provider selection: `claude` (default) or `asi` |
 | `ORCHESTRATOR_SEED` | No | Deterministic seed for orchestrator identity (default provided) |
 | `ORCHESTRATOR_PORT` | No | Port for orchestrator local server (default: `8001`) |
 | `MAX_NEGOTIATION_ROUNDS` | No | Max rounds before force-closing (default: `8`) |

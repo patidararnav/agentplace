@@ -337,6 +337,7 @@ class NegotiateRequest(BaseModel):
     budget: int = 200
     urgency: int = 3
     aggression: int = 3
+    city: str = "Palo Alto"
     notes: str = ""
 
 
@@ -357,9 +358,9 @@ async def run_negotiation(
 
     log.info(
         "\033[36m[%s]\033[0m Starting negotiation  service=%s  budget=$%s  "
-        "urgency=%s  aggression=%s  orchestrator=%s",
+        "urgency=%s  aggression=%s  city=%s  orchestrator=%s",
         session_id[:8], params.service, params.budget,
-        params.urgency, params.aggression, _orchestrator_address[:20] + "…",
+        params.urgency, params.aggression, params.city, _orchestrator_address[:20] + "…",
     )
 
     result: Dict[str, Any] = {
@@ -368,6 +369,7 @@ async def run_negotiation(
             "budget": params.budget,
             "urgency": params.urgency,
             "customer_aggression": params.aggression,
+            "city": params.city,
             "vendors": [v["name"] for v in VENDOR_DEFS],
         }
     }
@@ -401,6 +403,7 @@ async def run_negotiation(
         budget=params.budget,
         urgency=params.urgency,
         aggression=params.aggression,
+        city=params.city,
         notes=params.notes or f"Requesting {params.service} service",
         orchestrator_address=_orchestrator_address,
         port=cust_port,
@@ -512,8 +515,8 @@ async def start_negotiation(req: NegotiateRequest) -> NegotiateResponse:
     }
 
     log.info(
-        "\033[35m[API]\033[0m POST /api/negotiate  session=%s  service=%s  budget=$%s",
-        session_id[:8], req.service, req.budget,
+        "\033[35m[API]\033[0m POST /api/negotiate  session=%s  service=%s  budget=$%s  city=%s",
+        session_id[:8], req.service, req.budget, req.city,
     )
 
     asyncio.create_task(run_negotiation(session_id, req, event_queue))

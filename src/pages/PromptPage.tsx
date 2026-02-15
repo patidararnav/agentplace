@@ -76,6 +76,7 @@ function inferServiceFromPrompt(prompt: string, fallback = ''): string {
 export function PromptPage() {
   const [prompt, setPrompt] = useState('');
   const [urgency, setUrgency] = useState('');
+  const [city, setCity] = useState('');
   const [budgetStr, setBudgetStr] = useState('');
   const [avgPrice, setAvgPrice] = useState<{ avg_price: number; job_count: number; matched_types: string[] } | null>(null);
   const [avgPriceLoading, setAvgPriceLoading] = useState(false);
@@ -142,17 +143,23 @@ export function PromptPage() {
     const dayPrefix = `${dateKey(day)}|`;
     setSelectedAvailability((prev) => {
       const next = new Set(prev);
-      SLOT_LABELS.forEach((slotLabel) => {
-        next.add(`${dayPrefix}${slotLabel}`);
-      });
+      const allDaySlots = SLOT_LABELS.map((slotLabel) => `${dayPrefix}${slotLabel}`);
+      const allSelected = allDaySlots.every((slot) => next.has(slot));
+      if (allSelected) {
+        allDaySlots.forEach((slot) => next.delete(slot));
+      } else {
+        allDaySlots.forEach((slot) => next.add(slot));
+      }
       return next;
     });
   };
 
   const handleSubmit = () => {
     const trimmed = prompt.trim();
+    const trimmedCity = city.trim();
     if (!trimmed) return;
     if (!urgency) return;
+    if (!trimmedCity) return;
     if (!selectedCustomer) {
       setCustomerOpen(true);
       return;
@@ -170,6 +177,7 @@ export function PromptPage() {
       budget,
       urgency: parseInt(urgency, 10),
       aggression: 3,
+      city: trimmedCity,
       notes: `${trimmed}\n\nCUSTOMER_AVAILABILITY_NEXT_7_DAYS:\n${availabilityNote}`,
     });
 
@@ -333,6 +341,16 @@ export function PromptPage() {
               </Select>
             </div>
 
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">City</p>
+              <Input
+                value={city}
+                onChange={(e) => setCity(e.target.value)}
+                placeholder="e.g. Palo Alto"
+                className="bg-card"
+              />
+            </div>
+
             {/* Maximum budget — shown once the user types a job description */}
             {prompt.trim().length > 0 && (
               <div className="space-y-1.5">
@@ -482,7 +500,7 @@ export function PromptPage() {
 
             <Button
               onClick={() => handleSubmit()}
-              disabled={!prompt.trim() || !urgency}
+              disabled={!prompt.trim() || !urgency || !city.trim()}
               size="lg"
               className="w-full rounded-xl text-base font-medium gap-2"
             >

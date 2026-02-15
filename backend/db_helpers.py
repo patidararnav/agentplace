@@ -440,8 +440,18 @@ def create_job(
         "status": int(status or 5),
     }
 
+    inserted_job: Optional[Dict[str, Any]] = None
     try:
-        result = sb.table(TABLE_JOBS).insert(row).select("*").single().execute()
+        # Keep insert compatible across supabase-py versions that don't support
+        # chaining .select(...).single() after .insert(...).
+        result = sb.table(TABLE_JOBS).insert(row).execute()
+        data = getattr(result, "data", None)
+        if isinstance(data, dict):
+            inserted_job = data
+        elif isinstance(data, list) and data:
+            first = data[0]
+            if isinstance(first, dict):
+                inserted_job = first
     except Exception as exc:
         logger.error("Failed to create job: %s", exc)
         return None
@@ -494,7 +504,7 @@ def create_job(
         "Created job #%d: vendor=%d consumer=%s type=%s price=$%d",
         next_id, vendor_id, cleaned_consumer_name, cleaned_job_type, int(price or 0),
     )
-    return result.data if result.data else row
+    return inserted_job if inserted_job else row
 
 
 def update_job_status(job_id: int, status: int) -> bool:

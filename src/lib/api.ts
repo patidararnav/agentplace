@@ -9,6 +9,7 @@ export interface NegotiateParams {
   budget: number;
   urgency: number;
   aggression: number;
+  city: string;
   notes: string;
 }
 

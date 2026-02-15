@@ -2,6 +2,7 @@ uagents
 uagents-core
 python-dotenv
 openai
+anthropic
 fastapi
 uvicorn[standard]
 websockets
