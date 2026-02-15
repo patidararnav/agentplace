@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Sparkles, CheckCircle2, Circle, Clock, CreditCard,
@@ -56,7 +56,77 @@ export function FulfillmentPage() {
   const handleConfirmCompletion = () => {
     setConfirmed(true);
     if (job?.id) updateJobStatus(Number(job.id), 7);
-    setTimeout(() => setPaymentReleased(true), 1500);
+  };
+
+  // FET payment: request details then submit tx hash + wallet
+  const [paymentRequest, setPaymentRequest] = useState<{
+    recipient_address: string;
+    amount_fet: string;
+    fet_network: string;
+    reference: string;
+    description: string;
+  } | null>(null);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [paymentSubmitting, setPaymentSubmitting] = useState(false);
+  const [txHash, setTxHash] = useState('');
+  const [buyerWallet, setBuyerWallet] = useState('');
+  const [paymentAgentStatus, setPaymentAgentStatus] = useState<{
+    ready: boolean;
+    fet_network: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!confirmed || paymentReleased) return;
+    let cancelled = false;
+    fetch('/api/payment-agent/status')
+      .then((r) => r.json())
+      .then((data) => {
+        if (!cancelled) setPaymentAgentStatus({ ready: !!data.ready, fet_network: data.fet_network ?? null });
+      })
+      .catch(() => {
+        if (!cancelled) setPaymentAgentStatus({ ready: false, fet_network: null });
+      });
+    return () => { cancelled = true; };
+  }, [confirmed, paymentReleased]);
+
+  const handleRequestPayment = async () => {
+    if (!job?.id) return;
+    setPaymentError(null);
+    try {
+      const res = await fetch(`/api/jobs/${Number(job.id)}/request-payment`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setPaymentError(data.error || 'Failed to get payment details');
+        return;
+      }
+      setPaymentRequest(data);
+    } catch (e) {
+      setPaymentError('Network error. Is the backend running?');
+    }
+  };
+
+  const handleCommitPayment = async () => {
+    if (!job?.id || !txHash.trim() || !buyerWallet.trim()) return;
+    setPaymentError(null);
+    setPaymentSubmitting(true);
+    try {
+      const res = await fetch(`/api/jobs/${Number(job.id)}/commit-payment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transaction_id: txHash.trim(), buyer_fet_wallet: buyerWallet.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPaymentReleased(true);
+        if (job?.id) updateJobStatus(Number(job.id), 9);
+      } else {
+        setPaymentError(data.error || 'Payment verification failed');
+      }
+    } catch (e) {
+      setPaymentError('Network error');
+    } finally {
+      setPaymentSubmitting(false);
+    }
   };
 
   const handleSubmitReview = () => {
@@ -209,15 +279,84 @@ export function FulfillmentPage() {
                     )}
 
                     {step.id === 'payment' && confirmed && !paymentReleased && (
-                      <div className="mt-2 flex items-center gap-2 text-xs text-primary">
-                        <Loader2 className="size-3 animate-spin" />
-                        Releasing escrow payment...
+                      <div className="mt-3 space-y-3">
+                        {paymentAgentStatus !== null && (
+                          <p className={cn(
+                            'text-xs',
+                            paymentAgentStatus.ready ? 'text-[var(--success)]' : 'text-muted-foreground'
+                          )}>
+                            {paymentAgentStatus.ready
+                              ? `Payment agent ready${paymentAgentStatus.fet_network ? ` (${paymentAgentStatus.fet_network})` : ''}`
+                              : 'Payment agent not running. Start the backend and refresh.'}
+                          </p>
+                        )}
+                        {!paymentRequest ? (
+                          <>
+                            <p className="text-xs text-muted-foreground">
+                              Pay with FET (Fetch.ai). The payment agent will verify on-chain and release to the vendor.
+                            </p>
+                            <Button size="sm" onClick={handleRequestPayment} className="gap-1.5">
+                              <CreditCard className="size-4" />
+                              Get payment details
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <p className="text-xs text-muted-foreground">
+                              Send <strong>{paymentRequest.amount_fet} FET</strong> to the address below on{' '}
+                              <strong>{paymentRequest.fet_network}</strong>, then paste the transaction hash and your wallet address.
+                            </p>
+                            <div className="rounded-md bg-muted/50 p-2 font-mono text-xs break-all">
+                              {paymentRequest.recipient_address}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              <a
+                                href="https://companion.sandbox-london-b.fetch-ai.com/dorado-1/agents#Agents"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-primary underline"
+                              >
+                                Get testnet FET (faucet)
+                              </a>
+                            </p>
+                            <input
+                              type="text"
+                              placeholder="Transaction hash (tx hash)"
+                              value={txHash}
+                              onChange={(e) => setTxHash(e.target.value)}
+                              className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+                            />
+                            <input
+                              type="text"
+                              placeholder="Your Fetch wallet address (buyer_fet_wallet)"
+                              value={buyerWallet}
+                              onChange={(e) => setBuyerWallet(e.target.value)}
+                              className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+                            />
+                            {paymentError && (
+                              <p className="text-xs text-destructive">{paymentError}</p>
+                            )}
+                            <Button
+                              size="sm"
+                              onClick={handleCommitPayment}
+                              disabled={paymentSubmitting || !txHash.trim() || !buyerWallet.trim()}
+                              className="gap-1.5"
+                            >
+                              {paymentSubmitting ? (
+                                <Loader2 className="size-4 animate-spin" />
+                              ) : (
+                                <CheckCircle2 className="size-4" />
+                              )}
+                              {paymentSubmitting ? 'Verifying...' : 'Submit payment'}
+                            </Button>
+                          </>
+                        )}
                       </div>
                     )}
                     {step.id === 'payment' && paymentReleased && (
                       <div className="mt-2 flex items-center gap-2 text-xs text-[var(--success)]">
                         <CreditCard className="size-3.5" />
-                        {`$${displayPrice} released to ${displayVendor}`}
+                        Payment verified and released to {displayVendor}
                       </div>
                     )}
 

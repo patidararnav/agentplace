@@ -532,8 +532,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.transport == "sse":
-        import os
-        os.environ.setdefault("MCP_SSE_PORT", str(args.port))
+        mcp.settings.port = args.port
         mcp.run(transport="sse")
     else:
         mcp.run()

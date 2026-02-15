@@ -45,6 +45,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from customer import create_customer_agent
 from db_helpers import load_all_vendors, vendor_row_to_agent_config
 from orchestrator import create_orchestrator_agent
+from db_helpers import load_job
+from payment_agent import (
+    create_payment_agent,
+    get_payment_request_payload,
+    process_commit_payment_from_api,
+)
 from vendor import create_vendor_agent
 
 load_dotenv()
@@ -54,6 +60,11 @@ load_dotenv()
 # requires calling the faucet (~5 s per agent).  For local dev the
 # Almanac REST API is sufficient for agent discovery.
 from uagents.registration import AlmanacApiRegistrationPolicy
+
+try:
+    from uagents.setup import fund_agent_if_low
+except ImportError:
+    fund_agent_if_low = None  # type: ignore
 
 # ─── Logging ──────────────────────────────────────────────────────────────
 
@@ -77,6 +88,10 @@ ORCHESTRATOR_PORT = int(os.getenv("ORCHESTRATOR_PORT", "8001"))
 VENDOR_PORT_START = int(os.getenv("VENDOR_PORT_START", "8100"))
 MAX_ROUNDS = int(os.getenv("MAX_NEGOTIATION_ROUNDS", "5"))
 
+# Payment agent (FET seller; register in Agent Inspector when mailbox=True)
+PAYMENT_AGENT_SEED = os.getenv("PAYMENT_AGENT_SEED", "payment_agent_seed_treehacks_2026")
+PAYMENT_AGENT_PORT = int(os.getenv("PAYMENT_AGENT_PORT", "8300"))
+
 # Port range for ephemeral customer agents (one per session)
 _CUSTOMER_PORT_START = 9200
 _next_customer_port = _CUSTOMER_PORT_START
@@ -98,6 +113,7 @@ app.add_middleware(
 
 _orchestrator_agent = None          # The persistent orchestrator Agent
 _orchestrator_address: str = ""     # Its Agentverse address
+_payment_agent = None               # Payment agent (seller, FET)
 _vendor_agents: list = []           # Persistent vendor Agents
 _agent_tasks: list = []             # Background asyncio tasks running agents
 
@@ -111,8 +127,8 @@ sessions: Dict[str, Dict[str, Any]] = {}
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    """Create and launch persistent orchestrator + all Supabase vendor agents."""
-    global _orchestrator_agent, _orchestrator_address
+    """Create and launch persistent orchestrator, payment agent, and all Supabase vendor agents."""
+    global _orchestrator_agent, _orchestrator_address, _payment_agent
 
     log.info("\033[36m━━━ AgentPlace Server Starting ━━━\033[0m")
 
@@ -134,6 +150,26 @@ async def on_startup() -> None:
         _orchestrator_address, ORCHESTRATOR_PORT,
     )
     _agent_tasks.append(asyncio.create_task(_run_agent(_orchestrator_agent, "orchestrator")))
+
+    # ── Payment agent (FET seller; register in Agent Inspector) ──
+    _payment_agent = create_payment_agent(
+        seed=PAYMENT_AGENT_SEED,
+        port=PAYMENT_AGENT_PORT,
+        mailbox=True,
+        network="testnet",
+    )
+    if fund_agent_if_low is not None:
+        log.info("\033[33m[fund]\033[0m Checking payment agent wallet…")
+        try:
+            fund_agent_if_low(_payment_agent.wallet.address())
+            log.info("\033[32m[fund]\033[0m Payment agent funded OK")
+        except Exception as exc:
+            log.warning("\033[31m[fund]\033[0m Payment agent funding failed: %s", exc)
+    log.info(
+        "\033[35m[payment]\033[0m address=%s  port=%s  mailbox=True",
+        _payment_agent.address, PAYMENT_AGENT_PORT,
+    )
+    _agent_tasks.append(asyncio.create_task(_run_agent(_payment_agent, "payment")))
 
     # ── Vendors (auto-load every vendor from Supabase) ──
     try:
@@ -206,8 +242,8 @@ async def on_startup() -> None:
         _agent_tasks.append(asyncio.create_task(_run_agent(va, vdef["name"])))
 
     log.info(
-        "\033[36m━━━ %d persistent agents launched (orchestrator + %d vendors) ━━━\033[0m",
-        1 + len(_vendor_agents), len(_vendor_agents),
+        "\033[36m━━━ %d persistent agents launched (orchestrator + payment + %d vendors) ━━━\033[0m",
+        2 + len(_vendor_agents), len(_vendor_agents),
     )
     log.info(
         "\033[36m    Orchestrator: %s\033[0m", _orchestrator_address,
@@ -601,11 +637,91 @@ async def list_agents() -> Dict[str, Any]:
     """Return the addresses of all persistent agents (for debugging)."""
     return {
         "orchestrator": _orchestrator_address,
+        "payment": _payment_agent.address if _payment_agent else None,
         "vendors": [
             {"name": vdef["name"], "address": va.address}
             for vdef, va in zip(VENDOR_DEFS, _vendor_agents)
         ],
     }
+
+
+@app.get("/api/agents/registration")
+async def agent_registration() -> Dict[str, Any]:
+    """
+    Return addresses and endpoint URIs for Agent Inspector registration.
+    Use this when you can't see backend logs — open in browser or curl.
+    """
+    payment_endpoint = f"http://127.0.0.1:{PAYMENT_AGENT_PORT}"
+    return {
+        "orchestrator": {
+            "address": _orchestrator_address,
+            "note": "Create a mailbox for this address in Agent Inspector.",
+        },
+        "payment": {
+            "address": _payment_agent.address if _payment_agent else None,
+            "endpoint_uri": payment_endpoint,
+            "note": "In Agent Inspector: Add agent with this address and endpoint URI.",
+        },
+    }
+
+
+# ─── Payment (FET) ─────────────────────────────────────────────────────────
+
+
+class CommitPaymentRequest(BaseModel):
+    """Body for POST /api/jobs/:id/commit-payment."""
+    transaction_id: str
+    buyer_fet_wallet: str
+
+
+@app.post("/api/jobs/{job_id}/request-payment")
+async def request_payment(job_id: int) -> Dict[str, Any]:
+    """
+    Get payment request details for a job. Frontend shows "Pay X FET to <address>".
+    Customer pays on-chain, then submits tx hash + wallet via commit-payment.
+    """
+    if _payment_agent is None:
+        return {"error": "Payment agent not running"}
+    job = load_job(job_id)
+    if not job:
+        return {"error": f"Job {job_id} not found"}
+    recipient = str(_payment_agent.wallet.address())
+    description = f"AgentPlace job #{job_id} — {job.get('type', 'service')} (${job.get('price', 0)})"
+    payload = get_payment_request_payload(job_id=job_id, recipient_address=recipient, description=description)
+    log.info("\033[35m[API]\033[0m POST /api/jobs/%s/request-payment  recipient=%s", job_id, recipient[:20] + "…")
+    return payload
+
+
+@app.get("/api/payment-agent/status")
+async def payment_agent_status() -> Dict[str, Any]:
+    """Return whether the payment agent is ready and its recipient address (for debugging / UI)."""
+    if _payment_agent is None:
+        return {"ready": False, "recipient_address": None, "fet_network": None}
+    testnet = os.getenv("FET_USE_TESTNET", "true").lower() == "true"
+    return {
+        "ready": True,
+        "recipient_address": str(_payment_agent.wallet.address()),
+        "fet_network": "stable-testnet" if testnet else "mainnet",
+    }
+
+
+@app.post("/api/jobs/{job_id}/commit-payment")
+async def commit_payment(job_id: int, body: CommitPaymentRequest) -> Dict[str, Any]:
+    """
+    Verify on-chain FET payment and update job status to 8 (Payment sent) then 9 (Payment received).
+    """
+    log.info(
+        "\033[35m[API]\033[0m POST /api/jobs/%s/commit-payment  tx=%s",
+        job_id, body.transaction_id[:16] + "…" if len(body.transaction_id) > 16 else body.transaction_id,
+    )
+    ok, error_msg = process_commit_payment_from_api(
+        job_id=job_id,
+        transaction_id=body.transaction_id,
+        buyer_fet_wallet=body.buyer_fet_wallet,
+    )
+    if ok:
+        return {"success": True, "status": 9}
+    return {"success": False, "error": error_msg or "Payment verification failed"}
 
 
 # ─── Dynamic vendor registration ─────────────────────────────────────────
