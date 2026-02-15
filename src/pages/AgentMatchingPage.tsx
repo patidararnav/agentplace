@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Sparkles, Bot, CheckCircle2, Loader2, Circle,
@@ -13,9 +13,9 @@ import type { StepId, VendorResultEvent } from '@/hooks/useNegotiation';
 import type { VendorQuote, NegotiationMessage, AgentThought } from '@/types';
 import { cn } from '@/lib/utils';
 
-/* Each agent gets a unique accent color */
+/* Each agent gets a unique accent color; concierge red so "started" is obvious */
 const SYSTEM_AGENTS = [
-  { id: 'concierge' as StepId, label: 'Concierge', icon: MessageSquare, angle: -90, color: '#0070f3' },
+  { id: 'concierge' as StepId, label: 'Concierge', icon: MessageSquare, angle: -90, color: '#dc2626' },
   { id: 'matching' as StepId, label: 'Matching', icon: Search, angle: 0, color: '#7928ca' },
   { id: 'negotiation' as StepId, label: 'Negotiation', icon: Bot, angle: 90, color: '#ff0080' },
   { id: 'ranking' as StepId, label: 'Ranking', icon: ListOrdered, angle: 180, color: '#79ffe1' },
@@ -77,15 +77,48 @@ export function AgentMatchingPage() {
   const logEndRef = useRef<HTMLDivElement>(null);
   const hasNavigated = useRef(false);
 
+  const STEP_DURATION_MS = 1000;
+  const [animationIndex, setAnimationIndex] = useState(0);
+
+  const realDoneCount = SYSTEM_AGENTS.filter((a) => negotiation.stepStatuses[a.id] === 'done').length;
+  const realDoneCountRef = useRef(realDoneCount);
+  realDoneCountRef.current = realDoneCount;
+
+  const steps = SYSTEM_AGENTS.map((a, i) => ({
+    ...a,
+    status: (animationIndex > i ? 'done' : animationIndex === i ? 'active' : 'pending') as 'pending' | 'active' | 'done',
+  }));
+  const doneCount = Math.min(animationIndex, steps.length);
+  const progress = Math.round((doneCount / steps.length) * 100);
+  const MIN_DELAY_AFTER_COMPLETION_MS = 500;
+
+  // Staggered reveal: advance display one step per second toward real backend done count
+  // so if 3 steps complete at once, we still animate circle 1 → 2 → 3 one by one
+  useEffect(() => {
+    if (negotiation.error) return;
+    const id = setInterval(() => {
+      setAnimationIndex((prev) => {
+        const cap = realDoneCountRef.current;
+        if (prev < cap) return Math.min(prev + 1, cap);
+        return prev;
+      });
+    }, STEP_DURATION_MS);
+    return () => clearInterval(id);
+  }, [negotiation.error]);
+
   // Auto-scroll log
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [negotiation.logs.length]);
 
-  // Navigate to results when done
+  const completionStartedAt = useRef<number | null>(null);
+
+  // Navigate to results when done, only after the full 4-step animation has finished
   useEffect(() => {
     if (negotiation.isComplete && negotiation.outcome && !hasNavigated.current) {
-      hasNavigated.current = true;
+      if (completionStartedAt.current === null) {
+        completionStartedAt.current = Date.now();
+      }
 
       const quotes = buildQuotes(negotiation.vendorResults, negotiation.vendors);
       const totalVendors = Math.max(
@@ -111,18 +144,17 @@ export function AgentMatchingPage() {
 
       setNegotiationResults(results);
 
-      // Small delay so user sees the "Done" state
-      setTimeout(() => navigate('/customer/results'), 1500);
+      hasNavigated.current = true;
+
+      const elapsed = Date.now() - (completionStartedAt.current ?? Date.now());
+      const stepsRemaining = Math.max(0, SYSTEM_AGENTS.length - animationIndex);
+      const waitForAnimation = stepsRemaining * STEP_DURATION_MS + MIN_DELAY_AFTER_COMPLETION_MS;
+      const remaining = Math.max(waitForAnimation, Math.max(0, MIN_DELAY_AFTER_COMPLETION_MS - elapsed));
+
+      const t = setTimeout(() => navigate('/customer/results'), remaining);
+      return () => clearTimeout(t);
     }
-  }, [negotiation.isComplete, negotiation.outcome, negotiation.vendorResults, negotiation.vendors, navigate, setNegotiationResults]);
-
-  const steps = SYSTEM_AGENTS.map((a) => ({
-    ...a,
-    status: negotiation.stepStatuses[a.id],
-  }));
-
-  const doneCount = steps.filter((s) => s.status === 'done').length;
-  const progress = Math.round((doneCount / steps.length) * 100);
+  }, [negotiation.isComplete, negotiation.outcome, negotiation.vendorResults, negotiation.vendors, navigate, setNegotiationResults, animationIndex]);
 
   return (
     <div className="min-h-svh bg-background flex flex-col">
@@ -148,7 +180,7 @@ export function AgentMatchingPage() {
                 <AlertCircle className="size-3 text-destructive" />
                 Error
               </>
-            ) : progress < 100 ? (
+            ) : !negotiation.isComplete ? (
               <>
                 <Loader2 className="size-3 animate-spin" />
                 {progress}%
@@ -211,15 +243,20 @@ export function AgentMatchingPage() {
               const status = agent.status;
               const rad = (agent.angle * Math.PI) / 180;
               const radius = 140;
+              const innerRadius = 56; // stop line at edge of center orchestrator (size-28 = 112px diam)
+              const cx = radius + 40;
+              const cy = radius + 40;
               const x = Math.cos(rad) * radius;
               const y = Math.sin(rad) * radius;
+              const startX = cx + (x / radius) * innerRadius;
+              const startY = cy + (y / radius) * innerRadius;
               const Icon = agent.icon;
               const isActive = status === 'active';
               const isDone = status === 'done';
 
               return (
                 <div key={agent.id}>
-                  {/* Connection line */}
+                  {/* Connection line: from orchestrator edge to node, not over center circle */}
                   <svg
                     className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
                     width={radius * 2 + 80}
@@ -227,10 +264,10 @@ export function AgentMatchingPage() {
                     style={{ zIndex: 0 }}
                   >
                     <line
-                      x1={radius + 40}
-                      y1={radius + 40}
-                      x2={radius + 40 + x}
-                      y2={radius + 40 + y}
+                      x1={startX}
+                      y1={startY}
+                      x2={cx + x}
+                      y2={cy + y}
                       stroke={isDone ? 'var(--success)' : isActive ? agent.color : '#404040'}
                       strokeWidth={isActive ? 2 : 1}
                       strokeDasharray={isDone ? 'none' : '4 6'}
@@ -249,27 +286,48 @@ export function AgentMatchingPage() {
                       left: `calc(50% + ${x}px - 22px)`,
                     }}
                   >
-                    <div
-                      className={cn(
-                        'size-11 rounded-full border-2 flex items-center justify-center transition-all duration-500',
+                    <div className="relative flex items-center justify-center">
+                      {isActive && (
+                        <svg
+                          className="absolute size-14 animate-spin"
+                          viewBox="0 0 56 56"
+                          style={{ color: agent.color }}
+                        >
+                          <circle
+                            cx="28"
+                            cy="28"
+                            r="26"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeDasharray="20 120"
+                            strokeLinecap="round"
+                            opacity={0.8}
+                          />
+                        </svg>
                       )}
-                      style={{
-                        borderColor: isDone ? 'var(--success)' : isActive ? agent.color : '#333',
-                        background: isDone
-                          ? 'rgba(80,227,194,0.1)'
-                          : isActive
-                          ? `${agent.color}15`
-                          : 'rgba(10,10,10,0.5)',
-                        boxShadow: isActive ? `0 0 20px ${agent.color}40` : isDone ? '0 0 15px rgba(80,227,194,0.3)' : 'none',
-                      }}
-                    >
-                      {isDone ? (
-                        <CheckCircle2 className="size-4 text-[var(--success)]" />
-                      ) : isActive ? (
-                        <Loader2 className="size-4 animate-spin" style={{ color: agent.color }} />
-                      ) : (
-                        <Icon className="size-4 text-muted-foreground/50" />
-                      )}
+                      <div
+                        className={cn(
+                          'size-11 rounded-full border-2 flex items-center justify-center transition-all duration-500 relative z-10',
+                        )}
+                        style={{
+                          borderColor: isDone ? 'var(--success)' : isActive ? agent.color : '#333',
+                          background: isDone
+                            ? 'rgba(80,227,194,0.1)'
+                            : isActive
+                            ? `${agent.color}15`
+                            : 'rgba(10,10,10,0.5)',
+                          boxShadow: isActive ? `0 0 20px ${agent.color}40` : isDone ? '0 0 15px rgba(80,227,194,0.3)' : 'none',
+                        }}
+                      >
+                        {isDone ? (
+                          <CheckCircle2 className="size-4 text-[var(--success)]" />
+                        ) : isActive ? (
+                          <Loader2 className="size-4 animate-spin" style={{ color: agent.color }} />
+                        ) : (
+                          <Icon className="size-4 text-muted-foreground/50" />
+                        )}
+                      </div>
                     </div>
                     <span
                       className="text-[9px] font-semibold text-center leading-tight"
