@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import re
+from urllib.parse import unquote
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
@@ -32,7 +33,7 @@ from chat_utils import (
     parse_fields,
     services_from_csv,
 )
-from vendor_selector import VendorSelectorAgent
+from vendor_selector import VendorSelectionError, VendorSelectorAgent
 
 
 # ─── Convergence Logic (pure / importable) ───────────────────────────────
@@ -255,20 +256,23 @@ async def check_convergence(
 def parse_request_text(text: str, fields: Dict[str, str]) -> Dict[str, Any]:
     """Extract service/budget/urgency/notes from a customer request message."""
     service = fields.get("SERVICE", "").strip().lower()
-    if not service:
-        for kw in ["plumbing", "leaky faucet", "septic tank", "electrical", "roofing"]:
-            if kw in text.lower():
-                service = kw
-                break
     budget_s = fields.get("BUDGET", "")
     budget = int(budget_s) if budget_s.isdigit() else max(1, extract_price(text))
     urgency_s = fields.get("URGENCY", "")
     urgency = int(urgency_s) if urgency_s.isdigit() else 3
+    notes = fields.get("NOTES", "")
+    notes_urlenc = fields.get("NOTES_URLENC", "")
+    if notes_urlenc:
+        try:
+            notes = unquote(notes_urlenc)
+        except Exception:
+            # Keep existing notes fallback if decoding fails.
+            pass
     return {
-        "service": service or "plumbing",
+        "service": service,
         "budget": budget if budget > 0 else 200,
         "urgency": max(1, min(5, urgency)),
-        "notes": fields.get("NOTES", ""),
+        "notes": notes,
     }
 
 
@@ -290,7 +294,7 @@ def parse_customer_availability(notes: str) -> Dict[str, List[int]]:
         2026-02-15: 8a, 9a, 10a
         2026-02-16: 1p, 2p
 
-    Returns ``{day_name: [hour_ints]}`` e.g. ``{"Monday": [8, 9, 10]}``.
+    Returns ``{yyyy_mm_dd: [hour_ints]}`` e.g. ``{"2026-02-15": [8, 9, 10]}``.
     """
     result: Dict[str, List[int]] = {}
     in_availability = False
@@ -308,8 +312,7 @@ def parse_customer_availability(notes: str) -> Dict[str, List[int]]:
         date_str = parts[0].strip()
         slots_str = parts[1].strip()
         try:
-            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-            day_name = date_obj.strftime("%A")  # "Monday", "Tuesday", etc.
+            datetime.strptime(date_str, "%Y-%m-%d")
         except ValueError:
             continue
         hours: List[int] = []
@@ -318,73 +321,250 @@ def parse_customer_availability(notes: str) -> Dict[str, List[int]]:
             if slot in _SLOT_TO_HOUR:
                 hours.append(_SLOT_TO_HOUR[slot])
         if hours:
-            if day_name not in result:
-                result[day_name] = []
-            result[day_name].extend(hours)
+            if date_str not in result:
+                result[date_str] = []
+            result[date_str].extend(hours)
     return result
+
+
+def _hhmm_to_minutes(raw: Any) -> Optional[int]:
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    parts = text.split(":", 1)
+    if len(parts) != 2:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return None
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return hour * 60 + minute
+
+
+def _normalize_vendor_slots(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw]
+    if not isinstance(raw, list):
+        return []
+    # Common shape from frontend: ["09:00", "17:00"].
+    if (
+        len(raw) == 2
+        and all(isinstance(x, str) for x in raw)
+        and "-" not in raw[0]
+        and "-" not in raw[1]
+    ):
+        return [f"{raw[0]}-{raw[1]}"]
+    out: List[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, list) and len(item) == 2:
+            out.append(f"{item[0]}-{item[1]}")
+    return out
+
+
+def _vendor_slots_for_day(
+    vendor_availability: Dict[str, Any],
+    day_name: str,
+) -> List[str]:
+    vendor_day_raw = (
+        vendor_availability.get(day_name)
+        or vendor_availability.get(day_name.lower())
+        or vendor_availability.get(day_name.upper())
+    )
+    return _normalize_vendor_slots(vendor_day_raw)
+
+
+def _slot_ranges_minutes(slot_strings: List[str]) -> List[tuple[int, int]]:
+    ranges: List[tuple[int, int]] = []
+    for slot_str in slot_strings:
+        if not isinstance(slot_str, str) or "-" not in slot_str:
+            continue
+        start_str, end_str = slot_str.split("-", 1)
+        start = _hhmm_to_minutes(start_str)
+        end = _hhmm_to_minutes(end_str)
+        if start is None or end is None or end <= start:
+            continue
+        ranges.append((start, end))
+    return ranges
+
+
+def _ranges_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
+    return a_start < b_end and b_start < a_end
+
+
+def _minutes_to_hhmm(total: int) -> str:
+    total = max(0, int(total))
+    hour, minute = divmod(total, 60)
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _format_ranges(ranges: List[tuple[int, int]]) -> List[str]:
+    return [f"{_minutes_to_hhmm(start)}-{_minutes_to_hhmm(end)}" for start, end in ranges]
+
+
+def _load_vendor_busy_ranges(
+    vendor_id: int,
+    dates: List[str],
+) -> tuple[Dict[str, List[tuple[int, int]]], Optional[str]]:
+    """Return vendor's existing booked time ranges for each selected date."""
+    by_date: Dict[str, List[tuple[int, int]]] = {d: [] for d in dates}
+    if vendor_id <= 0 or not dates:
+        return by_date, None
+
+    wanted = set(dates)
+    try:
+        from supabase_client import TABLE_JOBS, get_supabase
+
+        sb = get_supabase()
+        result = (
+            sb.table(TABLE_JOBS)
+            .select("date,start_time,end_time,duration_minutes")
+            .eq("vendor_id", vendor_id)
+            .execute()
+        )
+    except Exception as exc:
+        return by_date, str(exc)
+
+    for row in result.data or []:
+        date_str = str(row.get("date") or "")
+        if date_str not in wanted:
+            continue
+        start = _hhmm_to_minutes(row.get("start_time"))
+        if start is None:
+            continue
+        end = _hhmm_to_minutes(row.get("end_time"))
+        if end is None or end <= start:
+            try:
+                dur = int(row.get("duration_minutes") or 0)
+            except (TypeError, ValueError):
+                dur = 0
+            if dur <= 0:
+                dur = 60
+            end = min(24 * 60, start + dur)
+        by_date.setdefault(date_str, []).append((start, end))
+    return by_date, None
+
+
+def evaluate_vendor_availability(
+    customer_availability: Dict[str, List[int]],
+    vendor_availability: Dict[str, Any],
+    vendor_id: int = 0,
+) -> tuple[bool, Dict[str, Any]]:
+    """Evaluate availability and return (is_available, structured_diagnostics)."""
+    diagnostics: Dict[str, Any] = {
+        "vendor_id": vendor_id,
+        "has_vendor_schedule": bool(vendor_availability),
+        "customer_availability": customer_availability,
+        "date_checks": [],
+        "decision": "unknown",
+    }
+
+    if not customer_availability:
+        diagnostics["decision"] = "no_customer_slots"
+        return True, diagnostics
+
+    has_vendor_schedule = bool(vendor_availability)
+    busy_by_date, busy_load_error = _load_vendor_busy_ranges(vendor_id, list(customer_availability.keys()))
+    diagnostics["busy_ranges"] = {
+        date: _format_ranges(ranges) for date, ranges in busy_by_date.items()
+    }
+    if busy_load_error:
+        diagnostics["busy_load_error"] = busy_load_error
+
+    for date_str, customer_hours in customer_availability.items():
+        date_detail: Dict[str, Any] = {
+            "date": date_str,
+            "customer_hours": list(customer_hours),
+            "customer_ranges": _format_ranges([(h * 60, h * 60 + 60) for h in customer_hours]),
+            "slot_checks": [],
+        }
+
+        try:
+            day_name = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A")
+            date_detail["day_name"] = day_name
+        except ValueError:
+            date_detail["result"] = "invalid_date"
+            diagnostics["date_checks"].append(date_detail)
+            continue
+
+        if has_vendor_schedule:
+            vendor_slots = _vendor_slots_for_day(vendor_availability, day_name)
+            slot_ranges = _slot_ranges_minutes(vendor_slots)
+            date_detail["vendor_slots"] = vendor_slots
+            date_detail["vendor_ranges"] = _format_ranges(slot_ranges)
+            if not slot_ranges:
+                date_detail["result"] = "no_vendor_slots_on_day"
+                diagnostics["date_checks"].append(date_detail)
+                continue
+        else:
+            # No weekly schedule data: allow all day, then filter only by booked jobs.
+            slot_ranges = [(0, 24 * 60)]
+            date_detail["vendor_slots"] = ["all_day(no_weekly_schedule)"]
+            date_detail["vendor_ranges"] = _format_ranges(slot_ranges)
+
+        busy_ranges = busy_by_date.get(date_str, [])
+        date_detail["busy_ranges"] = _format_ranges(busy_ranges)
+
+        for hour in customer_hours:
+            start = int(hour) * 60
+            end = start + 60
+            within_schedule = any(
+                _ranges_overlap(start, end, s_start, s_end)
+                for s_start, s_end in slot_ranges
+            )
+            conflicts_existing = any(
+                _ranges_overlap(start, end, b_start, b_end)
+                for b_start, b_end in busy_ranges
+            ) if within_schedule else False
+            slot_ok = within_schedule and not conflicts_existing
+            date_detail["slot_checks"].append({
+                "hour": int(hour),
+                "range": f"{_minutes_to_hhmm(start)}-{_minutes_to_hhmm(end)}",
+                "within_schedule": within_schedule,
+                "conflicts_existing": conflicts_existing,
+                "slot_ok": slot_ok,
+            })
+            if slot_ok:
+                date_detail["result"] = "slot_available"
+                diagnostics["date_checks"].append(date_detail)
+                diagnostics["decision"] = "available"
+                diagnostics["matched_date"] = date_str
+                diagnostics["matched_hour"] = int(hour)
+                return True, diagnostics
+
+        date_detail["result"] = "no_open_slot_on_date"
+        diagnostics["date_checks"].append(date_detail)
+
+    diagnostics["decision"] = "no_non_conflicting_slot"
+    return False, diagnostics
 
 
 def check_availability_overlap(
     customer_availability: Dict[str, List[int]],
     vendor_availability: Dict[str, Any],
+    vendor_id: int = 0,
 ) -> bool:
-    """Return True if any customer slot overlaps a vendor's schedule.
+    """Return True if any customer slot overlaps vendor schedule and not-booked jobs.
 
-    *customer_availability*: ``{"Monday": [8, 9, 10]}`` (hours)
+    *customer_availability*: ``{"2026-02-16": [16]}`` (hours)
     *vendor_availability*: ``{"Monday": ["9:00-12:00", "13:00-17:00"]}``
 
     If either side has no data we assume there **is** overlap (optimistic).
     """
-    if not customer_availability:
-        return True  # customer didn't pick slots → assume OK
-    if not vendor_availability:
-        return True  # vendor has no schedule data → assume OK
-
-    def _normalize_vendor_slots(raw: Any) -> List[str]:
-        if raw is None:
-            return []
-        if isinstance(raw, str):
-            return [raw]
-        if not isinstance(raw, list):
-            return []
-        # Common shape from frontend: ["09:00", "17:00"].
-        if (
-            len(raw) == 2
-            and all(isinstance(x, str) for x in raw)
-            and "-" not in raw[0]
-            and "-" not in raw[1]
-        ):
-            return [f"{raw[0]}-{raw[1]}"]
-        out: List[str] = []
-        for item in raw:
-            if isinstance(item, str):
-                out.append(item)
-            elif isinstance(item, list) and len(item) == 2:
-                out.append(f"{item[0]}-{item[1]}")
-        return out
-
-    for day_name, customer_hours in customer_availability.items():
-        vendor_day_raw = (
-            vendor_availability.get(day_name)
-            or vendor_availability.get(day_name.lower())
-            or vendor_availability.get(day_name.upper())
-        )
-        vendor_slots = _normalize_vendor_slots(vendor_day_raw)
-        if not vendor_slots:
-            continue
-        for slot_str in vendor_slots:
-            if not isinstance(slot_str, str) or "-" not in slot_str:
-                continue
-            try:
-                start_str, end_str = slot_str.split("-", 1)
-                start_hour = int(start_str.split(":")[0])
-                end_hour = int(end_str.split(":")[0])
-            except (ValueError, IndexError):
-                continue
-            for hour in customer_hours:
-                if start_hour <= hour < end_hour:
-                    return True
-    return False
+    is_available, _ = evaluate_vendor_availability(
+        customer_availability,
+        vendor_availability,
+        vendor_id=vendor_id,
+    )
+    return is_available
 
 
 # ─── Text helpers ────────────────────────────────────────────────────────
@@ -529,6 +709,7 @@ def create_orchestrator_agent(
             return
 
         vn = vendor_registry.get(va, {}).get("name", va)
+        v_id = int(vendor_registry.get(va, {}).get("vendor_id") or 0)
 
         if action == "deal":
             vs["active"] = False
@@ -538,6 +719,7 @@ def create_orchestrator_agent(
             if consensus_mode:
                 await ctx.send(req["customer"], make_chat_message("\n".join([
                     "TYPE=vendor_result", f"RID={rid}", f"VENDOR={va}",
+                    f"VENDOR_ID={v_id}",
                     f"VENDOR_NAME={vn}", "OUTCOME=deal", f"PRICE={price}",
                     f"ROUNDS={vs['rounds']}",
                     f"TEXT=Deal with {vn} at ${price}. {reason}",
@@ -554,14 +736,12 @@ def create_orchestrator_agent(
                     f"TYPE=deal_closed\nRID={rid}\nTEXT=Confirmed at ${price}. {reason}"))
                 ctx.logger.info("DEAL  rid=%s  vendor=%s  price=$%s", rid, vn, price)
                 if on_deal_callback:
-                    v_id = vendor_registry.get(va, {}).get('vendor_id')
                     on_deal_callback(
                         vendor_name=vn, vendor_id=v_id,
                         consumer_addr=req['customer'],
                         service=req['service'], price=price, rounds=vs['rounds'],
                     )
                 if on_deal_callback:
-                    v_id = vendor_registry.get(va, {}).get("vendor_id")
                     on_deal_callback(
                         vendor_name=vn, vendor_id=v_id,
                         consumer_addr=req["customer"],
@@ -576,6 +756,7 @@ def create_orchestrator_agent(
             if consensus_mode:
                 await ctx.send(req["customer"], make_chat_message("\n".join([
                     "TYPE=vendor_result", f"RID={rid}", f"VENDOR={va}",
+                    f"VENDOR_ID={v_id}",
                     f"VENDOR_NAME={vn}", "OUTCOME=terminated", "PRICE=0",
                     f"ROUNDS={vs['rounds']}",
                     f"TEXT=Negotiation with {vn} terminated: {reason}",
@@ -601,7 +782,6 @@ def create_orchestrator_agent(
 
     @agent.on_event("startup")
     async def on_startup(ctx: Context) -> None:
-        print(f"[DEBUG] Orchestrator on_startup FIRED  address={agent.address}", flush=True)
         ctx.logger.info("Orchestrator ready  address=%s", agent.address)
         if not os.getenv("AGENTVERSE_KEY") and mailbox:
             ctx.logger.warning("AGENTVERSE_KEY is not set.")
@@ -611,7 +791,6 @@ def create_orchestrator_agent(
         text = extract_text(msg)
         fields = parse_fields(text)
         mt = fields.get("TYPE", "").lower()
-        print(f"[DEBUG] Orchestrator handle_chat  TYPE={mt}  sender={sender[:20]}…", flush=True)
 
         await ctx.send(sender, ChatAcknowledgement(
             timestamp=datetime.now(timezone.utc), acknowledged_msg_id=msg.msg_id))
@@ -620,20 +799,25 @@ def create_orchestrator_agent(
         if mt == "vendor_register":
             va = fields.get("VENDOR", sender)
             avail_raw = fields.get("WEEKLY_AVAILABILITY", "")
+            vendor_id_raw = fields.get("VENDOR_ID", "")
+            vendor_id = int(vendor_id_raw) if vendor_id_raw.isdigit() else 0
             try:
                 weekly_avail = json.loads(avail_raw) if avail_raw else {}
             except (json.JSONDecodeError, TypeError):
                 weekly_avail = {}
             vendor_registry[va] = {
                 "name": fields.get("NAME", "Vendor"),
+                "vendor_id": vendor_id,
                 "services": services_from_csv(fields.get("SERVICES", "")),
                 "aggression": fields.get("AGGRESSION", ""),
                 "pricing_strategy": fields.get("STRATEGY", "maximize_jobs"),
                 "sender": sender,
                 "weekly_availability": weekly_avail,
             }
-            ctx.logger.info("Registered vendor %s  services=%s",
+            ctx.logger.info("Registered vendor %s  vendor_id=%s  address=%s  services=%s",
                             fields.get("NAME", "Vendor"),
+                            vendor_id,
+                            va,
                             vendor_registry[va]["services"])
             _push_event({
                 "type": "log",
@@ -646,19 +830,70 @@ def create_orchestrator_agent(
         if mt == "request":
             rid = fields.get("RID", str(uuid4()))
             data = parse_request_text(text, fields)
-            matched, selector_source = await selector_agent.select(
-                service=data["service"],
-                notes=data["notes"],
-                budget=data["budget"],
-                vendor_registry=vendor_registry,
+            notes_text = data.get("notes") or ""
+            if not data["service"]:
+                err_text = "No vendors found because the LLM failed to match vendors: missing service in request."
+                ctx.logger.error(
+                    "REQUEST_INVALID  rid=%s  sender=%s  reason=missing_service",
+                    rid,
+                    sender,
+                )
+                await ctx.send(sender, make_chat_message(_terminated_msg(rid, err_text)))
+                return
+            ctx.logger.info(
+                "REQUEST_IN  rid=%s  sender=%s  service=%s  budget=$%s  urgency=%s  notes_len=%d  has_availability_header=%s",
+                rid,
+                sender,
+                data["service"],
+                data["budget"],
+                data["urgency"],
+                len(notes_text),
+                "CUSTOMER_AVAILABILITY_NEXT_7_DAYS" in notes_text,
             )
+            try:
+                matched, selector_source = await selector_agent.select(
+                    service=data["service"],
+                    notes=data["notes"],
+                    budget=data["budget"],
+                    vendor_registry=vendor_registry,
+                )
+            except VendorSelectionError as exc:
+                err_text = f"No vendors found because the LLM failed to match vendors. {exc}"
+                ctx.logger.error(
+                    "SELECTOR_ERROR  rid=%s  service=%s  error=%s",
+                    rid,
+                    data["service"],
+                    exc,
+                )
+                await ctx.send(sender, make_chat_message(_terminated_msg(rid, err_text)))
+                return
             if not matched:
                 await ctx.send(sender, make_chat_message(
                     _terminated_msg(rid, f"No vendors found for {data['service']}.")))
                 return
+            matched_names = [vendor_registry.get(va, {}).get("name", va) for va in matched]
+            ctx.logger.info(
+                "SELECTOR_RESULT  rid=%s  source=%s  matched_count=%d  matched_names=%s",
+                rid,
+                selector_source,
+                len(matched),
+                sorted(matched_names),
+            )
 
             # ── Cross-check customer availability with vendor schedules ──
             customer_avail = parse_customer_availability(data.get("notes", ""))
+            selected_slot_count = sum(len(hours) for hours in customer_avail.values())
+            ctx.logger.info(
+                "CUSTOMER_AVAILABILITY_PARSED  rid=%s  slot_count=%d  dates=%s",
+                rid,
+                selected_slot_count,
+                sorted(customer_avail.keys()),
+            )
+            if not customer_avail and "CUSTOMER_AVAILABILITY_NEXT_7_DAYS" in (data.get("notes") or ""):
+                ctx.logger.warning(
+                    "CUSTOMER_AVAILABILITY_PARSE_EMPTY  rid=%s  notes contained availability header but parsed no slots",
+                    rid,
+                )
             available_vendors: Set[str] = set()
             unavailable_vendors: Set[str] = set()
 
@@ -667,13 +902,57 @@ def create_orchestrator_agent(
                     vendor_avail = vendor_registry.get(va, {}).get(
                         "weekly_availability", {}
                     )
-                    if check_availability_overlap(customer_avail, vendor_avail):
+                    vendor_id = int(vendor_registry.get(va, {}).get("vendor_id") or 0)
+                    vendor_name = vendor_registry.get(va, {}).get("name", va)
+                    is_available, diagnostics = evaluate_vendor_availability(
+                        customer_avail,
+                        vendor_avail,
+                        vendor_id=vendor_id,
+                    )
+                    if diagnostics.get("busy_load_error"):
+                        ctx.logger.warning(
+                            "SCHEDULE_FILTER_BUSY_LOAD_ERROR  rid=%s  vendor=%s  vendor_id=%s  error=%s",
+                            rid,
+                            vendor_name,
+                            vendor_id,
+                            diagnostics.get("busy_load_error"),
+                        )
+                    date_checks = diagnostics.get("date_checks", [])
+                    slot_checks = sum(
+                        len(d.get("slot_checks", []))
+                        for d in date_checks
+                        if isinstance(d, dict)
+                    )
+                    ctx.logger.info(
+                        "SCHEDULE_FILTER  rid=%s  vendor=%s  vendor_id=%s  available=%s  decision=%s  checked_dates=%d  checked_slots=%d  matched=%s@%s",
+                        rid,
+                        vendor_name,
+                        vendor_id,
+                        is_available,
+                        diagnostics.get("decision"),
+                        len(date_checks),
+                        slot_checks,
+                        diagnostics.get("matched_date", "-"),
+                        diagnostics.get("matched_hour", "-"),
+                    )
+                    ctx.logger.debug(
+                        "SCHEDULE_FILTER_DIAGNOSTICS  rid=%s  vendor=%s  diagnostics=%s",
+                        rid,
+                        vendor_name,
+                        json.dumps(diagnostics, sort_keys=True),
+                    )
+                    if is_available:
                         available_vendors.add(va)
                     else:
                         unavailable_vendors.add(va)
             else:
                 # Customer didn't specify availability → all pass
                 available_vendors = set(matched)
+                ctx.logger.info(
+                    "SCHEDULE_FILTER_SKIPPED  rid=%s  reason=no_customer_slots  vendors=%s",
+                    rid,
+                    sorted(vendor_registry.get(va, {}).get("name", va) for va in matched),
+                )
 
             # Include ALL matched vendors in the request (for counting)
             requests[rid] = {
@@ -685,9 +964,9 @@ def create_orchestrator_agent(
 
             ctx.logger.info(
                 "NEW REQUEST  rid=%s  service=%s  budget=$%s  matched=%d  "
-                "available=%d  unavailable=%d  selector=%s",
+                "available=%d  unavailable=%d  selector=%s  customer_slots=%d",
                 rid, data["service"], data["budget"], len(matched),
-                len(available_vendors), len(unavailable_vendors), selector_source,
+                len(available_vendors), len(unavailable_vendors), selector_source, selected_slot_count,
             )
             _push_event({
                 "type": "log",
@@ -722,8 +1001,10 @@ def create_orchestrator_agent(
                 vs["active"] = False
                 vs["outcome"] = "no_availability"
                 vn = vendor_registry.get(va, {}).get("name", va)
+                v_id = int(vendor_registry.get(va, {}).get("vendor_id") or 0)
                 await ctx.send(sender, make_chat_message("\n".join([
                     "TYPE=vendor_result", f"RID={rid}", f"VENDOR={va}",
+                    f"VENDOR_ID={v_id}",
                     f"VENDOR_NAME={vn}", "OUTCOME=no_availability",
                     "PRICE=0", "ROUNDS=0",
                     f"TEXT={vn} has no availability matching your schedule.",
@@ -784,9 +1065,11 @@ def create_orchestrator_agent(
             vs["active"] = False
             vs["outcome"] = "unavailable"
             vn = vendor_registry.get(va, {}).get("name", va)
+            v_id = int(vendor_registry.get(va, {}).get("vendor_id") or 0)
             if consensus_mode:
                 await ctx.send(req["customer"], make_chat_message("\n".join([
                     "TYPE=vendor_result", f"RID={rid}", f"VENDOR={va}",
+                    f"VENDOR_ID={v_id}",
                     f"VENDOR_NAME={vn}", "OUTCOME=unavailable", "PRICE=0", "ROUNDS=0",
                     f"TEXT={fields.get('TEXT', f'{vn} unavailable.')}",
                 ])))

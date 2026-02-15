@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { insertVendor } from "@/lib/supabase-data";
+import { geocodeAddress } from "@/lib/geocode";
 import { useApp } from "@/context/AppContext";
 
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
@@ -19,12 +20,11 @@ type JobTypeRow = { type: string; price: string; duration_minutes: string };
 
 export function NewVendorPage() {
   const navigate = useNavigate();
-  const { setSelectedVendor, refetchVendors, vendors } = useApp();
+  const { setSelectedVendor, refetchVendors } = useApp();
 
   const [name, setName] = useState("");
   const [maxDistanceMiles, setMaxDistanceMiles] = useState("25");
-  const [lat, setLat] = useState("");
-  const [lng, setLng] = useState("");
+  const [address, setAddress] = useState("");
   const [experienceYears, setExperienceYears] = useState("5");
   const [negotiationAggression, setNegotiationAggression] = useState("1");
   const [pricingStrategy, setPricingStrategy] = useState<"maximize_jobs" | "high_value_only" | "yield_optimizer">("maximize_jobs");
@@ -58,6 +58,29 @@ export function NewVendorPage() {
     if (parts.length >= 2) setWeekly((prev) => ({ ...prev, [day]: [parts[0], parts[1]] }));
   }
 
+  function fillDemo() {
+    setName("QuickFix Plumbing");
+    setMaxDistanceMiles("30");
+    setAddress("450 Serra Mall, Stanford, CA 94305");
+    setExperienceYears("8");
+    setNegotiationAggression("2");
+    setWeekly({
+      monday: ["08:00", "18:00"],
+      tuesday: ["08:00", "18:00"],
+      wednesday: ["08:00", "18:00"],
+      thursday: ["08:00", "18:00"],
+      friday: ["08:00", "18:00"],
+      saturday: ["09:00", "14:00"],
+      sunday: null,
+    });
+    setJobTypes([
+      { type: "Plumbing Repair", price: "150", duration_minutes: "90" },
+      { type: "Drain Cleaning", price: "180", duration_minutes: "60" },
+      { type: "Pipe Leak Fix", price: "220", duration_minutes: "120" },
+    ]);
+    setError("");
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
@@ -80,14 +103,24 @@ export function NewVendorPage() {
       return;
     }
 
-    const nextId = vendors.length > 0
-      ? Math.max(...vendors.map((v) => v.vendor_id)) + 1
-      : 1;
+    const trimmedAddress = address.trim();
+    if (!trimmedAddress) {
+      setError("Home address is required.");
+      return;
+    }
+
+    setSubmitting(true);
+    const location = await geocodeAddress(trimmedAddress);
+    if (!location) {
+      setSubmitting(false);
+      setError("Could not find that address. Try a full address (e.g. street, city, state/country).");
+      return;
+    }
+
     const payload = {
-      vendor_id: nextId,
       name: trimName,
       max_distance_miles: Number(maxDistanceMiles) || 25,
-      home_location: { lat: Number(lat) || 0, lng: Number(lng) || 0 },
+      home_location: { lat: location.lat, lng: location.lng },
       experience_years: Number(experienceYears) || 0,
       negotiation_aggression: Number(negotiationAggression) || 1,
       pricing_strategy: pricingStrategy,
@@ -99,11 +132,10 @@ export function NewVendorPage() {
       total_ratings: 0,
     };
 
-    setSubmitting(true);
     const created = await insertVendor(payload);
     if (!created) {
       setSubmitting(false);
-      setError("Failed to create vendor in browser storage.");
+      setError("Failed to create vendor in Supabase.");
       return;
     }
 
@@ -113,7 +145,7 @@ export function NewVendorPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          vendor_id: nextId,
+          vendor_id: created.vendor_id,
           name: trimName,
           services: jobTypesPayload.map((jt) => jt.type.toLowerCase()),
           base_prices: Object.fromEntries(
@@ -144,11 +176,17 @@ export function NewVendorPage() {
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b border-border">
-        <div className="max-w-2xl mx-auto px-6 py-4 flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate("/vendor")} aria-label="Back">
-            <ArrowLeft className="h-5 w-5" />
+        <div className="max-w-2xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <Button variant="ghost" size="icon" onClick={() => navigate("/vendor")} aria-label="Back">
+              <ArrowLeft className="h-5 w-5" />
+            </Button>
+            <h1 className="text-lg font-semibold text-foreground">New vendor</h1>
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={fillDemo} className="gap-1.5">
+            <Sparkles className="h-4 w-4" />
+            Fill demo
           </Button>
-          <h1 className="text-lg font-semibold text-foreground">New vendor</h1>
         </div>
       </header>
 
@@ -197,27 +235,18 @@ export function NewVendorPage() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label htmlFor="lat">Home latitude</Label>
-                  <Input
-                    id="lat"
-                    type="number"
-                    step="any"
-                    value={lat}
-                    onChange={(e) => setLat(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="lng">Home longitude</Label>
-                  <Input
-                    id="lng"
-                    type="number"
-                    step="any"
-                    value={lng}
-                    onChange={(e) => setLng(e.target.value)}
-                  />
-                </div>
+              <div>
+                <Label htmlFor="address">Home address</Label>
+                <Input
+                  id="address"
+                  type="text"
+                  value={address}
+                  onChange={(e) => setAddress(e.target.value)}
+                  placeholder="e.g. 123 Main St, San Francisco, CA"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  We’ll look up the location to get coordinates for matching.
+                </p>
               </div>
               <div>
                 <Label htmlFor="negotiation">Negotiation aggression (1–5)</Label>

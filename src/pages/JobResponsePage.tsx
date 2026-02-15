@@ -7,32 +7,26 @@ import {
   Clock,
   DollarSign,
   Sparkles,
-  Brain,
   TrendingDown,
-  Bot,
-  User,
   ArrowLeft,
   Calendar,
   CalendarX2,
   MessageSquare,
 } from 'lucide-react';
 import { NegotiationChatModal } from '@/components/NegotiationChatModal';
-import { updateJobStatus } from '@/lib/supabase-data';
 import { useApp } from '@/context/AppContext';
 import type { VendorQuote } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { cn } from '@/lib/utils';
+import { createJob, updateJobStatus } from '@/lib/supabase-data';
 
 function formatDate(s: string) {
   const d = new Date(s);
@@ -47,22 +41,67 @@ function formatDate(s: string) {
 
 const JOB_STATUS_BOOKED = 5;
 
+function parseDate(dateTime: string): string | undefined {
+  const date = dateTime.split('T')[0] ?? '';
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : undefined;
+}
+
+function parseStartTime(dateTime: string): string {
+  const timeWithZone = dateTime.split('T')[1] ?? '';
+  const hhmm = timeWithZone.slice(0, 5);
+  return /^\d{2}:\d{2}$/.test(hhmm) ? hhmm : '09:00';
+}
+
 export function JobResponsePage() {
   const navigate = useNavigate();
-  const { negotiationResults, selectedCustomer } = useApp();
+  const { negotiationResults, selectedCustomer, negotiateParams } = useApp();
   const [selectedChat, setSelectedChat] = useState<VendorQuote | null>(null);
-  const [selectedCoT, setSelectedCoT] = useState<VendorQuote | null>(null);
   const [acceptedQuote, setAcceptedQuote] = useState<VendorQuote | null>(null);
+  const [acceptingVendorId, setAcceptingVendorId] = useState<number | null>(null);
+  const [acceptError, setAcceptError] = useState('');
 
   const stats = negotiationResults?.stats ?? { vendorsSearched: 0, vendorsNegotiated: 0, avgSavings: 0 };
   const quotes = negotiationResults?.quotes ?? [];
   const unavailableVendors = negotiationResults?.unavailableVendors ?? [];
 
   async function handleAccept(q: VendorQuote) {
-    if (q.job_id != null) {
-      await updateJobStatus(q.job_id, JOB_STATUS_BOOKED);
+    if (!selectedCustomer) {
+      navigate('/', { state: { promptSelectCustomer: true } });
+      return;
     }
-    setAcceptedQuote(q);
+
+    setAcceptError('');
+    setAcceptingVendorId(q.vendorId);
+    try {
+      let accepted = q;
+      if (q.job_id != null) {
+        const statusResult = await updateJobStatus(q.job_id, JOB_STATUS_BOOKED);
+        if ('error' in statusResult) {
+          setAcceptError(statusResult.error);
+          return;
+        }
+      } else {
+        const createResult = await createJob({
+          vendor_id: q.vendorId,
+          vendor_name: q.name,
+          consumer_name: selectedCustomer.consumer_name,
+          job_type: negotiateParams?.service ?? 'general',
+          price: q.price,
+          duration_minutes: q.durationMinutes,
+          date: parseDate(q.dateTime),
+          start_time: parseStartTime(q.dateTime),
+          status: JOB_STATUS_BOOKED,
+        });
+        if ('error' in createResult) {
+          setAcceptError(createResult.error);
+          return;
+        }
+        accepted = { ...q, job_id: createResult.data.job_id };
+      }
+      setAcceptedQuote(accepted);
+    } finally {
+      setAcceptingVendorId(null);
+    }
   }
 
   return (
@@ -93,6 +132,11 @@ export function JobResponsePage() {
       {/* Quotes */}
       <main className="flex-1 overflow-auto px-6 py-6">
         <div className="max-w-3xl mx-auto space-y-4">
+          {acceptError && (
+            <div className="rounded-lg bg-destructive/10 text-destructive text-sm px-4 py-2">
+              {acceptError}
+            </div>
+          )}
           {quotes.length === 0 && (
             <div className="text-center py-20 space-y-3">
               <Sparkles className="size-10 text-muted-foreground/30 mx-auto" />
@@ -109,6 +153,7 @@ export function JobResponsePage() {
             const savings = Math.round(
               ((q.originalPrice - q.price) / q.originalPrice) * 100
             );
+            const displayTags = (q.insightTags ?? []).filter((tag) => !/\brounds?\b/i.test(tag));
             return (
               <Card
                 key={q.vendorId}
@@ -145,9 +190,9 @@ export function JobResponsePage() {
                               {savings}% off
                             </Badge>
                           </div>
-                          {q.insightTags && q.insightTags.length > 0 && (
+                          {displayTags.length > 0 && (
                             <div className="flex flex-wrap gap-1.5 mt-2">
-                              {q.insightTags.map((tag) => (
+                              {displayTags.map((tag) => (
                                 <span
                                   key={tag}
                                   className="text-[11px] px-2 py-0.5 rounded-md bg-muted/60 text-muted-foreground border border-border/50"
@@ -194,15 +239,6 @@ export function JobResponsePage() {
                       variant="outline"
                       size="sm"
                       className="flex-1 gap-1.5"
-                      onClick={() => setSelectedCoT(q)}
-                    >
-                      <Brain className="size-4" />
-                      Agent reasoning
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1 gap-1.5"
                       onClick={() => setSelectedChat(q)}
                     >
                       <MessageCircle className="size-4" />
@@ -211,10 +247,11 @@ export function JobResponsePage() {
                     <Button
                       size="sm"
                       className="flex-1 gap-1.5"
+                      disabled={acceptingVendorId != null}
                       onClick={() => handleAccept(q)}
                     >
                       <Check className="size-4" />
-                      Accept
+                      {acceptingVendorId === q.vendorId ? 'Accepting…' : 'Accept'}
                     </Button>
                   </div>
                 </CardContent>
@@ -309,89 +346,6 @@ export function JobResponsePage() {
           vendorName={selectedChat.name}
           onClose={() => setSelectedChat(null)}
         />
-      )}
-
-      {/* Chain-of-thought modal */}
-      {selectedCoT && (
-        <Dialog open onOpenChange={() => setSelectedCoT(null)}>
-          <DialogContent className="sm:max-w-2xl max-h-[85vh] flex flex-col gap-0 p-0 bg-card border-border">
-            <DialogHeader className="px-5 py-4 border-b border-border/50">
-              <DialogTitle className="text-base flex items-center gap-2">
-                <Brain className="size-4 text-primary" />
-                Agent Reasoning — {selectedCoT.name}
-              </DialogTitle>
-            </DialogHeader>
-
-            <Tabs defaultValue="customer" className="flex-1 flex flex-col min-h-0">
-              <TabsList className="mx-5 mt-3 w-auto self-start">
-                <TabsTrigger value="customer" className="gap-1.5 text-xs">
-                  <User className="size-3.5" />
-                  Your Agent
-                </TabsTrigger>
-                <TabsTrigger value="vendor" className="gap-1.5 text-xs">
-                  <Bot className="size-3.5" />
-                  Vendor Agent
-                </TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="customer" className="flex-1 min-h-0 mt-0">
-                <ScrollArea className="h-[400px]">
-                  <div className="p-5 space-y-4">
-                    {selectedCoT.customerAgentThoughts.map((t, i) => (
-                      <div key={i} className="flex gap-3">
-                        <div className="flex-shrink-0 mt-1">
-                          <span className="text-sm font-bold text-blue-600 dark:text-blue-400">
-                            {i + 1}.
-                          </span>
-                        </div>
-                        <div>
-                          <p
-                            className={cn(
-                              'text-sm',
-                              t.type === 'result'
-                                ? 'text-primary font-medium'
-                                : 'text-foreground'
-                            )}
-                          >
-                            {t.text}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              </TabsContent>
-
-              <TabsContent value="vendor" className="flex-1 min-h-0 mt-0">
-                <ScrollArea className="h-[400px]">
-                  <div className="p-5 space-y-4">
-                    {selectedCoT.vendorAgentThoughts.map((t, i) => (
-                      <div key={i} className="flex gap-3">
-                        <div className="flex-shrink-0 mt-1">
-                          <span className="text-sm font-bold text-blue-600 dark:text-blue-400">
-                            {i + 1}.
-                          </span>
-                        </div>
-                        <div>
-                          <p
-                            className={cn(
-                              'text-sm',
-                              t.type === 'result'
-                                ? 'text-primary font-medium'
-                                : 'text-foreground'
-                            )}
-                          >
-                            {t.text}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              </TabsContent>
-            </Tabs>
-          </DialogContent>
-        </Dialog>
       )}
     </div>
   );

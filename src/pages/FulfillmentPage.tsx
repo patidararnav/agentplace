@@ -2,14 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Sparkles, CheckCircle2, Circle, Clock, CreditCard,
-  Star, ArrowLeft, MapPin, Camera, ShieldCheck, Loader2,
+  Star, ArrowLeft, MapPin, ShieldCheck, Loader2, Play,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Textarea } from '@/components/ui/textarea';
-import { updateJobStatus } from '@/lib/supabase-data';
+import { updateJobStatus, fetchJobById } from '@/lib/supabase-data';
 import type { PlannedJob } from '@/types';
 import { cn } from '@/lib/utils';
 
@@ -87,8 +87,23 @@ export function FulfillmentPage() {
   const [rating, setRating] = useState(0);
   const [reviewText, setReviewText] = useState('');
   const [reviewSubmitted, setReviewSubmitted] = useState(() => (job?.status != null && job.status >= 9));
+  const [statusOverride, setStatusOverride] = useState<number | null>(null);
+  const [serverStatus, setServerStatus] = useState<number | null>(null);
 
-  const stepsDoneByStatus = job?.status != null ? stepsDoneFromStatus(job.status) : 0;
+  const pollIntervalMs = 5000;
+  useEffect(() => {
+    if (!job?.id) return;
+    const fetch = () => {
+      fetchJobById(Number(job.id))
+        .then((j) => j != null && setServerStatus(j.status));
+    };
+    fetch();
+    const interval = setInterval(fetch, pollIntervalMs);
+    return () => clearInterval(interval);
+  }, [job?.id]);
+
+  const effectiveStatus = statusOverride ?? serverStatus ?? job?.status ?? 0;
+  const stepsDoneByStatus = stepsDoneFromStatus(effectiveStatus);
 
   const handleBack = () => {
     if (isVendorTracking) navigate('/vendor/calendar');
@@ -96,7 +111,12 @@ export function FulfillmentPage() {
     else navigate('/customer/results');
   };
 
-  const handleConfirmCompletion = () => {
+  const handleMarkInProgress = () => {
+    if (job?.id) updateJobStatus(Number(job.id), 6);
+    setStatusOverride(6);
+  };
+
+  const handleCustomerConfirmComplete = () => {
     setConfirmed(true);
     if (job?.id) updateJobStatus(Number(job.id), 7);
   };
@@ -347,12 +367,12 @@ export function FulfillmentPage() {
               const doneFromStatus = idx < stepsDoneByStatus;
               const isDone =
                 doneFromStatus ||
-                (step.id === 'completed' && (job?.status != null && job.status >= 7 || confirmed)) ||
-                (step.id === 'payment' && (job?.status != null && job.status >= 8 || paymentReleased)) ||
-                (step.id === 'received' && (job?.status != null && job.status >= 9 || reviewSubmitted || (isVendorTracking && paymentReleased)));
+                (step.id === 'completed' && (effectiveStatus >= 7 || confirmed)) ||
+                (step.id === 'payment' && (effectiveStatus >= 8 || paymentReleased)) ||
+                (step.id === 'received' && (effectiveStatus >= 9 || reviewSubmitted || (isVendorTracking && effectiveStatus >= 8)));
               const isActive = !isDone && (
-                (step.id === 'completed' && !confirmed && stepsDoneByStatus >= 2 && (job?.status == null || job.status <= 6)) ||
-                (step.id === 'payment' && confirmed && !paymentReleased) ||
+                (step.id === 'completed' && !confirmed && stepsDoneByStatus >= 2 && effectiveStatus <= 6 && !isVendorTracking) ||
+                (step.id === 'payment' && confirmed && !paymentReleased && !isVendorTracking) ||
                 (step.id === 'received' && paymentReleased && !reviewSubmitted && !isVendorTracking)
               );
               const isLast = idx === FULFILLMENT_STEPS.length - 1;
@@ -399,13 +419,27 @@ export function FulfillmentPage() {
                     </p>
                     <p className="text-xs text-muted-foreground/70 mt-0.5">{step.detail}</p>
 
-                    {step.id === 'completed' && !confirmed && stepsDoneByStatus >= 2 && (job?.status == null || job.status <= 6) && (
+                    {step.id === 'in-progress' && isVendorTracking && effectiveStatus === 5 && (
+                      <div className="mt-3">
+                        <Button size="sm" onClick={handleMarkInProgress} className="gap-1.5">
+                          <Play className="size-4" />
+                          Go — Start job
+                        </Button>
+                      </div>
+                    )}
+
+                    {step.id === 'in-progress' && !isVendorTracking && effectiveStatus === 5 && (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Waiting for vendor to start the job.
+                      </p>
+                    )}
+
+                    {step.id === 'completed' && !isVendorTracking && !confirmed && stepsDoneByStatus >= 2 && effectiveStatus <= 6 && (
                       <div className="mt-3 space-y-2">
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <Camera className="size-3.5" />
-                          <span>3 photos uploaded as proof of work</span>
-                        </div>
-                        <Button size="sm" onClick={handleConfirmCompletion} className="gap-1.5">
+                        <p className="text-xs text-muted-foreground">
+                          Confirm when the work is done.
+                        </p>
+                        <Button size="sm" onClick={handleCustomerConfirmComplete} className="gap-1.5">
                           <CheckCircle2 className="size-4" />
                           Confirm job complete
                         </Button>
@@ -629,11 +663,16 @@ export function FulfillmentPage() {
                         )}
                       </div>
                     )}
-                    {step.id === 'payment' && paymentReleased && (
+                    {step.id === 'payment' && (paymentReleased || effectiveStatus >= 8) && (
                       <div className="mt-2 flex items-center gap-2 text-xs text-[var(--success)]">
                         <CreditCard className="size-3.5" />
                         Payment verified and released to {displayVendor}
                       </div>
+                    )}
+                    {step.id === 'payment' && isVendorTracking && effectiveStatus >= 7 && effectiveStatus < 8 && (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Waiting for customer to release payment.
+                      </p>
                     )}
 
                     {step.id === 'received' && paymentReleased && !reviewSubmitted && !reviewOpen && !isVendorTracking && (

@@ -384,6 +384,8 @@ function generateVendorReviews() {
   return { reviews: texts, average_rating, total_ratings: numReviews };
 }
 
+const TARGET_VENDOR_COUNT = 20;
+
 let vendorId = 1;
 const vendorRows = [];
 const allJobs = [];
@@ -393,12 +395,13 @@ let jobId = 1;
 
 const vendorHeader = 'vendor_id,name,weekly_availability,max_distance_miles,home_location,experience_years,negotiation_aggression,job_types,job_ids,reviews,average_rating,total_ratings';
 
-for (const cat of CATEGORIES) {
+outer: for (const cat of CATEGORIES) {
   const jobTypesJson = JSON.stringify(
     cat.jobTypes.map((j) => ({ type: j.type, price: j.price, duration_minutes: j.duration_minutes }))
   );
 
   for (const vendorName of cat.vendors) {
+    if (vendorRows.length >= TARGET_VENDOR_COUNT) break outer;
     const city = pickVendorCity();
     const homeLocation = JSON.stringify({
       lat: Math.round(jitter(city.lat) * 10000) / 10000,
@@ -437,6 +440,7 @@ for (const cat of CATEGORIES) {
     const { reviews, average_rating, total_ratings } = generateVendorReviews();
     const reviewsJson = JSON.stringify(reviews);
     const jobIdsJson = JSON.stringify(jobIdsByVendor[vendorId] || []);
+    const strategy = rnd([1,2,3]);
 
     const row = [
       vendorId,
@@ -446,6 +450,7 @@ for (const cat of CATEGORIES) {
       homeLocation,
       expYears,
       aggression,
+      strategy,
       jobTypesJson,
       jobIdsJson,
       reviewsJson,

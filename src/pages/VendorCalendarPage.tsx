@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, ArrowLeft, Wrench, Clock, DollarSign } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -69,19 +69,27 @@ export function VendorCalendarPage() {
     return jobsByDate[selectedDateKey] ?? [];
   }, [selectedDateKey, jobsByDate]);
 
+  const pollIntervalMs = 5000;
+  const isInitialFetch = useRef(true);
+
   useEffect(() => {
     if (!selectedVendor) {
       setCalendarJobs([]);
       return;
     }
-    setJobsLoading(true);
-    const jobIds = (selectedVendor.job_ids ?? []).map((id) => Number(id));
-    fetchJobsForVendor(
-      selectedVendor.vendor_id,
-      jobIds.length > 0 ? jobIds : undefined
-    )
-      .then(setCalendarJobs)
-      .finally(() => setJobsLoading(false));
+    isInitialFetch.current = true;
+    const fetch = () => {
+      if (isInitialFetch.current) {
+        setJobsLoading(true);
+        isInitialFetch.current = false;
+      }
+      fetchJobsForVendor(selectedVendor.vendor_id)
+        .then(setCalendarJobs)
+        .finally(() => setJobsLoading(false));
+    };
+    fetch();
+    const interval = setInterval(fetch, pollIntervalMs);
+    return () => clearInterval(interval);
   }, [selectedVendor]);
 
   const year = viewDate.getFullYear();

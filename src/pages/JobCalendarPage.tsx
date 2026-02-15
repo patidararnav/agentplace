@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Sparkles, ArrowLeft } from 'lucide-react';
 import { JobDetailModal } from '@/components/JobDetailModal';
@@ -65,19 +65,27 @@ export function JobCalendarPage() {
     return jobsByDate[selectedDateKey] ?? [];
   }, [selectedDateKey, jobsByDate]);
 
+  const pollIntervalMs = 5000;
+  const isInitialFetch = useRef(true);
+
   useEffect(() => {
     if (!selectedCustomer) {
       setCalendarJobs([]);
       return;
     }
-    setJobsLoading(true);
-    const jobIds = (selectedCustomer.job_ids ?? []).map((id: number | string) => Number(id));
-    fetchJobsForCustomer(
-      selectedCustomer.consumer_name,
-      jobIds.length > 0 ? jobIds : undefined
-    )
-      .then(setCalendarJobs)
-      .finally(() => setJobsLoading(false));
+    isInitialFetch.current = true;
+    const fetch = () => {
+      if (isInitialFetch.current) {
+        setJobsLoading(true);
+        isInitialFetch.current = false;
+      }
+      fetchJobsForCustomer(selectedCustomer.consumer_name)
+        .then(setCalendarJobs)
+        .finally(() => setJobsLoading(false));
+    };
+    fetch();
+    const interval = setInterval(fetch, pollIntervalMs);
+    return () => clearInterval(interval);
   }, [selectedCustomer]);
 
   const year = viewDate.getFullYear();
