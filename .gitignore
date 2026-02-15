@@ -2,8 +2,9 @@ venv/
 .venv/
 __pycache__/
 *.pyc
-.env
 private_keys.json
+.env
+backend/.env
 
 # Frontend
 node_modules/

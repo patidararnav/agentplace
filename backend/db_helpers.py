@@ -64,7 +64,8 @@ def load_vendors_for_service(service_type: str) -> List[Dict[str, Any]]:
 def vendor_row_to_agent_config(row: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a Supabase VendorData row into kwargs for create_vendor_agent.
 
-    Returns a dict with keys: name, services, base_prices, aggression, vendor_id.
+    Returns a dict with keys: name, services, base_prices, aggression,
+    pricing_strategy, vendor_id.
     """
     job_types = row.get("job_types") or []
     services = []
@@ -79,6 +80,15 @@ def vendor_row_to_agent_config(row: Dict[str, Any]) -> Dict[str, Any]:
 
     aggression = int(row.get("negotiation_aggression") or 2)
     aggression = max(1, min(5, aggression))
+    strategy = (
+        str(row.get("pricing_strategy") or "maximize_jobs")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+    if strategy not in {"maximize_jobs", "high_value_only", "yield_optimizer"}:
+        strategy = "maximize_jobs"
 
     return {
         "vendor_id": int(row.get("vendor_id", 0)),
@@ -86,6 +96,7 @@ def vendor_row_to_agent_config(row: Dict[str, Any]) -> Dict[str, Any]:
         "services": services,
         "base_prices": base_prices,
         "aggression": aggression,
+        "pricing_strategy": strategy,
         "max_distance_miles": int(row.get("max_distance_miles") or 0),
         "home_location": row.get("home_location") or {"lat": 0, "lng": 0},
         "experience_years": int(row.get("experience_years") or 0),
@@ -220,3 +231,39 @@ def update_job_status(job_id: int, status: int) -> bool:
     except Exception as e:
         logger.error("Failed to update job %d status: %s", job_id, e)
         return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ANALYTICS helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def get_all_job_types_with_prices() -> List[Dict[str, Any]]:
+    """Return all jobs with their type and price from the database."""
+    sb = get_supabase()
+    try:
+        result = sb.table(TABLE_JOBS).select("price, type").execute()
+        return result.data or []
+    except Exception as e:
+        logger.warning("Failed to query jobs: %s", e)
+        return []
+
+
+def compute_avg_price(rows: List[Dict[str, Any]], matched_types: List[str]) -> Dict[str, Any]:
+    """Compute average price from rows whose type is in *matched_types*."""
+    matched_lower = {t.strip().lower() for t in matched_types if t.strip()}
+    prices: list[int] = []
+    for row in rows:
+        job_type = (row.get("type") or "").strip().lower()
+        price = row.get("price")
+        if price is None or price <= 0:
+            continue
+        if job_type in matched_lower:
+            prices.append(int(price))
+
+    avg = round(sum(prices) / len(prices)) if prices else 0
+    return {
+        "avg_price": avg,
+        "job_count": len(prices),
+        "matched_types": sorted(matched_lower),
+    }

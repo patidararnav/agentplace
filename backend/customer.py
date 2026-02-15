@@ -71,6 +71,7 @@ def create_customer_agent(
     network: Optional[str] = None,
     readme_path: Optional[str] = None,
     publish_agent_details: bool = False,
+    registration_policy: Optional[Any] = None,
     # ── simulation hooks (optional) ──
     startup_delay: float = 0.0,
     result_sink: Optional[Dict[str, Any]] = None,
@@ -110,6 +111,9 @@ def create_customer_agent(
             "aggression": str(aggression),
             "protocol": "chat",
         }
+
+    if registration_policy is not None:
+        kwargs["registration_policy"] = registration_policy
 
     agent = Agent(**kwargs)
 

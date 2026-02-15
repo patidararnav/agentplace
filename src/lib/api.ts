@@ -35,6 +35,29 @@ export async function startNegotiation(
 }
 
 /**
+ * Fetch the average price of similar past jobs based on the user's raw query.
+ * The backend uses an LLM to match the query to relevant job types in the DB.
+ */
+export interface AvgPriceResponse {
+  avg_price: number;
+  job_count: number;
+  matched_types: string[];
+  query: string;
+}
+
+export async function fetchAvgPrice(
+  query: string,
+  service: string,
+): Promise<AvgPriceResponse> {
+  const params = new URLSearchParams({ query, service });
+  const res = await fetch(`/api/avg-price?${params}`);
+  if (!res.ok) {
+    return { avg_price: 0, job_count: 0, matched_types: [], query };
+  }
+  return res.json();
+}
+
+/**
  * Open a WebSocket connection to stream negotiation events.
  */
 export function connectNegotiationWS(sessionId: string): WebSocket {

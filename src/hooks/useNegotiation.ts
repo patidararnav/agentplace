@@ -263,6 +263,12 @@ export function useNegotiation(params: NegotiateParams | null) {
 
               case 'vendor_result': {
                 const e = event as VendorResultEvent;
+
+                // Deduplicate: skip if we already have a result for this vendor
+                if (prev.vendorResults.some((v) => v.vendor_address === e.vendor_address)) {
+                  return prev;
+                }
+
                 next.vendorResults = [...prev.vendorResults, e];
 
                 // Update vendor data

@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase';
-import type { VendorData, CustomerData, JobData } from '@/types';
+import type { VendorData, CustomerData, JobData, VendorPricingStrategy } from '@/types';
 
 const TABLE_VENDOR = import.meta.env.VITE_SUPABASE_TABLE_VENDOR ?? 'VendorData';
 const TABLE_CONSUMER = import.meta.env.VITE_SUPABASE_TABLE_CONSUMER ?? 'ConsumerData';
@@ -18,12 +18,28 @@ function getStorage(): Storage | null {
   return window.localStorage;
 }
 
+function normalizeVendorPricingStrategy(raw: unknown): VendorPricingStrategy {
+  const token = String(raw ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[-\s]+/g, '_');
+  if (token === 'high_value_only') return 'high_value_only';
+  if (token === 'yield_optimizer') return 'yield_optimizer';
+  return 'maximize_jobs';
+}
+
+function isMissingColumnError(message: string, column: string): boolean {
+  const lower = (message || '').toLowerCase();
+  return lower.includes('column') && lower.includes(column.toLowerCase());
+}
+
 function rowToVendor(row: Record<string, unknown>): VendorData {
   const jobTypes = (row.job_types as { type: string; price: number; duration_minutes: number }[]) ?? [];
   const jobIds = Array.isArray(row.job_ids) ? (row.job_ids as number[]) : [];
   const reviews = Array.isArray(row.reviews) ? (row.reviews as string[]) : [];
   const avg = row.average_rating != null ? Number(row.average_rating) : undefined;
   const total = row.total_ratings != null ? Number(row.total_ratings) : undefined;
+  const pricingStrategy = normalizeVendorPricingStrategy(row.pricing_strategy);
   return {
     vendor_id: Number(row.vendor_id),
     name: (row.name as string) ?? '',
@@ -32,6 +48,7 @@ function rowToVendor(row: Record<string, unknown>): VendorData {
     home_location: (row.home_location as { lat: number; lng: number }) ?? { lat: 0, lng: 0 },
     experience_years: Number(row.experience_years) ?? 0,
     negotiation_aggression: Number(row.negotiation_aggression) ?? 0,
+    pricing_strategy: pricingStrategy,
     job_types: jobTypes,
     job_ids: jobIds.length ? jobIds : undefined,
     reviews: reviews.length ? reviews : undefined,
@@ -283,6 +300,7 @@ export async function insertVendor(payload: {
   home_location: { lat: number; lng: number };
   experience_years: number;
   negotiation_aggression: number;
+  pricing_strategy?: VendorPricingStrategy;
   job_types: { type: string; price: number; duration_minutes: number }[];
   job_ids?: number[] | null;
   reviews?: string[] | null;
@@ -299,7 +317,8 @@ export async function insertVendor(payload: {
       .maybeSingle();
     nextId = existing?.vendor_id != null ? Number(existing.vendor_id) + 1 : 1;
   }
-  const row = {
+  const strategy = normalizeVendorPricingStrategy(payload.pricing_strategy);
+  const row: Record<string, unknown> = {
     vendor_id: nextId,
     name: payload.name,
     weekly_availability: payload.weekly_availability,
@@ -307,15 +326,27 @@ export async function insertVendor(payload: {
     home_location: payload.home_location,
     experience_years: payload.experience_years,
     negotiation_aggression: payload.negotiation_aggression,
+    pricing_strategy: strategy,
     job_types: payload.job_types ?? [],
     job_ids: payload.job_ids ?? [],
     reviews: payload.reviews ?? [],
     average_rating: payload.average_rating != null ? String(payload.average_rating) : null,
     total_ratings: payload.total_ratings != null ? String(payload.total_ratings) : null,
   };
-  const { data, error } = await supabase.from(TABLE_VENDOR).insert(row).select().single();
+
+  let { data, error } = await supabase.from(TABLE_VENDOR).insert(row).select().single();
+  if (error && isMissingColumnError(error.message, 'pricing_strategy')) {
+    const { pricing_strategy: _omitted, ...legacyRow } = row;
+    const retry = await supabase.from(TABLE_VENDOR).insert(legacyRow).select().single();
+    data = retry.data;
+    error = retry.error;
+  }
   if (!error && data) {
-    return rowToVendor(data as Record<string, unknown>);
+    const mapped = rowToVendor(data as Record<string, unknown>);
+    if (!(data as Record<string, unknown>).pricing_strategy) {
+      mapped.pricing_strategy = strategy;
+    }
+    return mapped;
   }
   if (error) console.warn('Supabase insert vendor:', error.message);
   const vendors = readList<VendorData>(STORAGE_KEYS.vendors);
@@ -327,6 +358,7 @@ export async function insertVendor(payload: {
     home_location: payload.home_location,
     experience_years: payload.experience_years,
     negotiation_aggression: payload.negotiation_aggression,
+    pricing_strategy: strategy,
     job_types: payload.job_types,
     job_ids: payload.job_ids ?? [],
     reviews: payload.reviews ?? [],
@@ -348,6 +380,7 @@ export async function updateVendor(
     home_location: { lat: number; lng: number };
     experience_years: number;
     negotiation_aggression: number;
+    pricing_strategy?: VendorPricingStrategy;
     job_types: { type: string; price: number; duration_minutes: number }[];
     job_ids?: number[] | null;
     reviews?: string[] | null;
@@ -355,6 +388,7 @@ export async function updateVendor(
     total_ratings?: string | number | null;
   }
 ): Promise<VendorData | null> {
+  const strategy = normalizeVendorPricingStrategy(payload.pricing_strategy);
   const row: Record<string, unknown> = {
     name: payload.name,
     weekly_availability: payload.weekly_availability,
@@ -362,23 +396,40 @@ export async function updateVendor(
     home_location: payload.home_location,
     experience_years: payload.experience_years,
     negotiation_aggression: payload.negotiation_aggression,
+    pricing_strategy: strategy,
     job_types: payload.job_types,
     job_ids: payload.job_ids ?? [],
     reviews: payload.reviews ?? [],
     average_rating: payload.average_rating != null ? String(payload.average_rating) : null,
     total_ratings: payload.total_ratings != null ? String(payload.total_ratings) : null,
   };
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from(TABLE_VENDOR)
     .update(row)
     .eq('vendor_id', vendorId)
     .select()
     .single();
+  if (error && isMissingColumnError(error.message, 'pricing_strategy')) {
+    const { pricing_strategy: _omitted, ...legacyRow } = row;
+    const retry = await supabase
+      .from(TABLE_VENDOR)
+      .update(legacyRow)
+      .eq('vendor_id', vendorId)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
   if (error) {
     console.warn('Supabase update vendor:', error.message);
     return null;
   }
-  return data ? rowToVendor(data as Record<string, unknown>) : null;
+  if (!data) return null;
+  const mapped = rowToVendor(data as Record<string, unknown>);
+  if (!(data as Record<string, unknown>).pricing_strategy) {
+    mapped.pricing_strategy = strategy;
+  }
+  return mapped;
 }
 
 /** Insert new customer. Returns { data } on success or { error: string } on failure. */
