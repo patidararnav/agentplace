@@ -61,6 +61,19 @@ def load_vendor(vendor_id: int) -> Optional[Dict[str, Any]]:
     return result.data
 
 
+def load_job(job_id: int) -> Optional[Dict[str, Any]]:
+    """Load a single job by job_id."""
+    sb = get_supabase()
+    result = (
+        sb.table(TABLE_JOBS)
+        .select("*")
+        .eq("job_id", job_id)
+        .maybe_single()
+        .execute()
+    )
+    return result.data
+
+
 def load_vendors_for_service(service_type: str) -> List[Dict[str, Any]]:
     """Load all vendors whose job_types include the given service."""
     all_vendors = load_all_vendors()

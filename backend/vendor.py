@@ -25,6 +25,15 @@ from uagents_core.contrib.protocols.chat import (
     ChatMessage,
     chat_protocol_spec,
 )
+from uagents_core.contrib.protocols.payment import (
+    CancelPayment,
+    CommitPayment,
+    CompletePayment,
+    Funds,
+    RejectPayment,
+    RequestPayment,
+    payment_protocol_spec,
+)
 
 from chat_utils import (
     extract_price,
@@ -33,6 +42,13 @@ from chat_utils import (
     make_chat_message,
     parse_fields,
     services_from_csv,
+)
+from db_helpers import update_job_status
+from payment_agent import (
+    ACCEPTED_FUNDS,
+    FET_FUNDS,
+    TriggerRequestPayment,
+    verify_fet_payment_to_agent,
 )
 
 
@@ -607,6 +623,7 @@ def create_vendor_agent(
     weekly_availability: Optional[Dict[str, Any]] = None,
     pricing_strategy: str = DEFAULT_PRICING_STRATEGY,
     vendor_id: int = 0,
+    resolve: Optional[Any] = None,
 ) -> Agent:
     """Return a fully-wired vendor Agent ready to run or add to a Bureau."""
 
@@ -644,6 +661,8 @@ def create_vendor_agent(
 
     if registration_policy is not None:
         kwargs["registration_policy"] = registration_policy
+    if resolve is not None:
+        kwargs["resolve"] = resolve
 
     agent = Agent(**kwargs)
     _weekly_availability = weekly_availability or {}
@@ -699,7 +718,7 @@ def create_vendor_agent(
         return _sanitize_vendor_utterance(raw, fallback)
 
     def _registration_text() -> str:
-        return "\n".join([
+        lines = [
             "TYPE=vendor_register",
             f"VENDOR={agent.address}",
             f"NAME={name}",
@@ -709,7 +728,10 @@ def create_vendor_agent(
             f"STRATEGY={strategy}",
             f"WEEKLY_AVAILABILITY={json.dumps(_weekly_availability)}",
             "NOTE=Vendor ready for natural-language chat negotiation.",
-        ])
+        ]
+        if vendor_id > 0:
+            lines.append(f"VENDOR_ID={vendor_id}")
+        return "\n".join(lines)
 
     # ── Protocol handlers ──
 
@@ -1048,7 +1070,87 @@ def create_vendor_agent(
     async def handle_ack(ctx: Context, sender: str, msg: ChatAcknowledgement) -> None:
         pass
 
+    # ── Payment protocol (seller role — vendor requests and accepts payment) ──
+
+    payment_proto = Protocol(spec=payment_protocol_spec, role="seller")
+    trigger_proto = Protocol(name="AgentPlacePaymentTrigger", version="0.1.0")
+
+    @trigger_proto.on_message(TriggerRequestPayment)
+    async def handle_trigger_request_payment(ctx: Context, sender: str, msg: TriggerRequestPayment) -> None:
+        """API (buyer) asks this vendor to send RequestPayment to the buyer agent."""
+        buyer_address = sender
+        description = msg.description or f"AgentPlace job #{msg.job_id}"
+        recipient = (msg.recipient_address or "").strip() or str(agent.wallet.address())
+        req = RequestPayment(
+            accepted_funds=ACCEPTED_FUNDS,
+            recipient=recipient,
+            deadline_seconds=300,
+            reference=str(msg.job_id),
+            description=description,
+            metadata={},
+        )
+        await ctx.send(buyer_address, req)
+        ctx.logger.info(
+            "[seller] Sent RequestPayment to buyer %s for job %s (recipient=%s)",
+            buyer_address[:20] + "…", msg.job_id, recipient[:20] + "…" if recipient else "?",
+        )
+
+    @payment_proto.on_message(CommitPayment)
+    async def handle_commit_payment(ctx: Context, sender: str, msg: CommitPayment) -> None:
+        """Buyer submitted payment — verify on-chain and send CompletePayment or CancelPayment."""
+        job_id_str = (msg.reference or "").strip()
+        if not job_id_str or not job_id_str.isdigit():
+            ctx.logger.error("CommitPayment missing or invalid reference (job_id): %s", msg.reference)
+            await ctx.send(
+                sender,
+                CancelPayment(transaction_id=msg.transaction_id, reason="Missing job reference"),
+            )
+            return
+
+        job_id = int(job_id_str)
+        payment_verified = False
+
+        if msg.funds.payment_method == "fet_direct" and msg.funds.currency == "FET":
+            buyer_fet = None
+            expected_recipient = None
+            if isinstance(msg.metadata, dict):
+                buyer_fet = msg.metadata.get("buyer_fet_wallet") or msg.metadata.get("buyer_fet_address")
+                expected_recipient = msg.metadata.get("expected_recipient") or msg.metadata.get("expected_recipient_address")
+            if not expected_recipient:
+                expected_recipient = str(agent.wallet.address())
+            if not buyer_fet:
+                ctx.logger.error("Missing buyer_fet_wallet in metadata")
+            else:
+                payment_verified = verify_fet_payment_to_agent(
+                    transaction_id=msg.transaction_id,
+                    expected_amount_fet=FET_FUNDS.amount,
+                    sender_fet_address=str(buyer_fet),
+                    expected_recipient_address=expected_recipient,
+                    logger=ctx.logger,
+                )
+
+        if payment_verified:
+            update_job_status(job_id, 8)  # Payment sent
+            update_job_status(job_id, 9)  # Payment received
+            ctx.logger.info("[seller] Job %s payment verified; status → 8 → 9", job_id)
+            await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
+        else:
+            ctx.logger.warning("[seller] Job %s payment verification failed", job_id)
+            await ctx.send(
+                sender,
+                CancelPayment(
+                    transaction_id=msg.transaction_id,
+                    reason="Payment verification failed",
+                ),
+            )
+
+    @payment_proto.on_message(RejectPayment)
+    async def handle_reject_payment(ctx: Context, sender: str, msg: RejectPayment) -> None:
+        ctx.logger.info("[seller] Payment rejected by %s: %s", sender[:20] + "…", msg.reason or "no reason")
+
     agent.include(chat_proto, publish_manifest=publish_agent_details)
+    agent.include(payment_proto, publish_manifest=True)
+    agent.include(trigger_proto)
     return agent
 
 
