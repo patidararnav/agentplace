@@ -1,13 +1,14 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Sparkles, Bot, CheckCircle2, Loader2, Circle,
-  MessageSquare, Search, ListOrdered, AlertCircle,
+  MessageSquare, Search, ListOrdered, AlertCircle, ArrowRight,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useApp } from '@/context/AppContext';
-import type { NegotiationResults } from '@/context/AppContext';
+import type { NegotiationResults, UnavailableVendor } from '@/context/AppContext';
 import { useNegotiation } from '@/hooks/useNegotiation';
 import type { StepId, VendorResultEvent } from '@/hooks/useNegotiation';
 import type { VendorQuote, NegotiationMessage, AgentThought } from '@/types';
@@ -75,23 +76,34 @@ export function AgentMatchingPage() {
   const { lastPrompt, negotiateParams, setNegotiationResults } = useApp();
   const negotiation = useNegotiation(negotiateParams);
   const logEndRef = useRef<HTMLDivElement>(null);
-  const hasNavigated = useRef(false);
+  const hasStoredResults = useRef(false);
+  const [resultsReady, setResultsReady] = useState(false);
 
   // Auto-scroll log
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [negotiation.logs.length]);
 
-  // Navigate to results when done
+  // Store results when negotiation completes (but don't navigate)
   useEffect(() => {
-    if (negotiation.isComplete && negotiation.outcome && !hasNavigated.current) {
-      hasNavigated.current = true;
+    if (negotiation.isComplete && negotiation.outcome && !hasStoredResults.current) {
+      hasStoredResults.current = true;
 
       const quotes = buildQuotes(negotiation.vendorResults, negotiation.vendors);
+
+      // Extract vendors that were schedule-unavailable
+      const unavailableVendors: UnavailableVendor[] = negotiation.vendorResults
+        .filter((v) => v.outcome === 'no_availability')
+        .map((v) => ({
+          name: v.vendor_name,
+          reason: 'No availability for your times',
+        }));
+
       const totalVendors = Math.max(
         Object.keys(negotiation.vendors).length,
         negotiation.vendorResults.length,
       );
+      const negotiatedCount = totalVendors - unavailableVendors.length;
       const deals = quotes.length;
       const avgSavings = deals > 0
         ? Math.round(quotes.reduce((acc, q) => acc + ((q.originalPrice - q.price) / q.originalPrice) * 100, 0) / deals)
@@ -99,9 +111,10 @@ export function AgentMatchingPage() {
 
       const results: NegotiationResults = {
         quotes,
+        unavailableVendors,
         stats: {
           vendorsSearched: totalVendors,
-          vendorsNegotiated: totalVendors,
+          vendorsNegotiated: negotiatedCount,
           avgSavings,
         },
         outcome: negotiation.outcome.outcome,
@@ -110,11 +123,9 @@ export function AgentMatchingPage() {
       };
 
       setNegotiationResults(results);
-
-      // Small delay so user sees the "Done" state
-      setTimeout(() => navigate('/customer/results'), 1500);
+      setResultsReady(true);
     }
-  }, [negotiation.isComplete, negotiation.outcome, negotiation.vendorResults, negotiation.vendors, navigate, setNegotiationResults]);
+  }, [negotiation.isComplete, negotiation.outcome, negotiation.vendorResults, negotiation.vendors, setNegotiationResults]);
 
   const steps = SYSTEM_AGENTS.map((a) => ({
     ...a,
@@ -174,7 +185,7 @@ export function AgentMatchingPage() {
         <div className="mx-6 mt-4 p-4 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm">
           <p className="font-medium">Connection Error</p>
           <p className="text-xs mt-1 opacity-80">{negotiation.error}</p>
-          <p className="text-xs mt-1 opacity-60">Make sure the backend is running: cd backend && source venv/bin/activate && uvicorn server:app --host 0.0.0.0 --port 8081</p>
+          <p className="text-xs mt-1 opacity-60">Make sure the backend is running: cd backend && uvicorn server:app --port 8080</p>
         </div>
       )}
 
@@ -363,6 +374,20 @@ export function AgentMatchingPage() {
           </ScrollArea>
         </div>
       </main>
+
+      {/* View Quotes button — appears when negotiation is done */}
+      {resultsReady && (
+        <div className="px-6 py-4 border-t border-border/40 flex-shrink-0">
+          <Button
+            className="w-full gap-2 text-sm font-semibold"
+            size="lg"
+            onClick={() => navigate('/customer/results')}
+          >
+            View Quotes
+            <ArrowRight className="size-4" />
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

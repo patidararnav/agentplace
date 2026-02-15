@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { insertVendor } from "@/lib/supabase-data";
 import { useApp } from "@/context/AppContext";
 
@@ -26,6 +27,7 @@ export function NewVendorPage() {
   const [lng, setLng] = useState("");
   const [experienceYears, setExperienceYears] = useState("5");
   const [negotiationAggression, setNegotiationAggression] = useState("1");
+  const [pricingStrategy, setPricingStrategy] = useState<"maximize_jobs" | "high_value_only" | "yield_optimizer">("maximize_jobs");
   const [weekly, setWeekly] = useState<Record<string, string[] | null>>(defaultWeekly);
   const [jobTypes, setJobTypes] = useState<JobTypeRow[]>([
     { type: "", price: "", duration_minutes: "" },
@@ -88,6 +90,7 @@ export function NewVendorPage() {
       home_location: { lat: Number(lat) || 0, lng: Number(lng) || 0 },
       experience_years: Number(experienceYears) || 0,
       negotiation_aggression: Number(negotiationAggression) || 1,
+      pricing_strategy: pricingStrategy,
       weekly_availability: weekly,
       job_types: jobTypesPayload,
       job_ids: [],
@@ -110,12 +113,15 @@ export function NewVendorPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          vendor_id: nextId,
           name: trimName,
           services: jobTypesPayload.map((jt) => jt.type.toLowerCase()),
           base_prices: Object.fromEntries(
             jobTypesPayload.map((jt) => [jt.type.toLowerCase(), jt.price])
           ),
           aggression: Number(negotiationAggression) || 1,
+          pricing_strategy: pricingStrategy,
+          weekly_availability: weekly,
         }),
       });
       if (agentRes.ok) {
@@ -223,6 +229,24 @@ export function NewVendorPage() {
                   value={negotiationAggression}
                   onChange={(e) => setNegotiationAggression(e.target.value)}
                 />
+              </div>
+              <div>
+                <Label htmlFor="pricing_strategy">Pricing strategy</Label>
+                <Select value={pricingStrategy} onValueChange={(v) => setPricingStrategy(v as typeof pricingStrategy)}>
+                  <SelectTrigger id="pricing_strategy" className="bg-card">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="maximize_jobs">Maximize number of jobs</SelectItem>
+                    <SelectItem value="high_value_only">High value jobs only</SelectItem>
+                    <SelectItem value="yield_optimizer">Yield optimizer</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {pricingStrategy === "maximize_jobs" && "More flexible pricing to increase win rate, including near-base offers."}
+                  {pricingStrategy === "high_value_only" && "Holds firmer on price and prioritizes higher-paying jobs."}
+                  {pricingStrategy === "yield_optimizer" && "Drops prices for dates where the vendor has more than 80% free capacity."}
+                </p>
               </div>
             </CardContent>
           </Card>

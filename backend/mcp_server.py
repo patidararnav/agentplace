@@ -176,6 +176,7 @@ def create_vendor(
     home_location_lng: float,
     experience_years: int,
     negotiation_aggression: int,
+    pricing_strategy: str = "maximize_jobs",
 ) -> str:
     """Create a new vendor in the database.
 
@@ -188,6 +189,7 @@ def create_vendor(
         home_location_lng: Home location longitude.
         experience_years: Years of experience.
         negotiation_aggression: Aggression level 1-5 (1=flexible, 5=firm).
+        pricing_strategy: maximize_jobs | high_value_only | yield_optimizer.
     """
     sb = get_supabase()
     # Generate next vendor_id
@@ -209,6 +211,7 @@ def create_vendor(
         "home_location": {"lat": home_location_lat, "lng": home_location_lng},
         "experience_years": experience_years,
         "negotiation_aggression": negotiation_aggression,
+        "pricing_strategy": pricing_strategy,
         "job_ids": [],
         "reviews": [],
         "average_rating": None,
@@ -497,6 +500,7 @@ def get_schema() -> str:
                 "home_location": "jsonb ({lat, lng})",
                 "experience_years": "bigint",
                 "negotiation_aggression": "bigint (1-5)",
+                "pricing_strategy": "text (maximize_jobs|high_value_only|yield_optimizer)",
                 "job_types": "jsonb ([{type, price, duration_minutes}])",
                 "job_ids": "jsonb (array of job_id ints)",
                 "reviews": "jsonb (array of strings)",

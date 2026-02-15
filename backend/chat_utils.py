@@ -30,6 +30,9 @@ async def generate_text(
     system_prompt: str,
     user_prompt: str,
     fallback: str = "",
+    *,
+    max_tokens: int = 120,
+    temperature: float = 0.8,
 ) -> str:
     client = get_llm_client()
     if client is None:
@@ -41,8 +44,8 @@ async def generate_text(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=120,
-            temperature=0.8,
+            max_tokens=max_tokens,
+            temperature=temperature,
         )
         text = (response.choices[0].message.content or "").strip()
         return text if text else fallback

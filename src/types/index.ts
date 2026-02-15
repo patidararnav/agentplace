@@ -1,5 +1,6 @@
 /* ── Job status: 1=Concierge, 2=Matching, 3=Negotiating, 4=Ranking, 5=Booked, 6=In progress, 7=Project completed, 8=Payment sent, 9=Payment received ── */
 export type JobStatus = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+export type VendorPricingStrategy = 'maximize_jobs' | 'high_value_only' | 'yield_optimizer';
 
 /* ── Jobs DB: one row per job; vendor and customer reference by id/name ── */
 export interface JobData {
@@ -24,6 +25,7 @@ export interface VendorData {
   home_location: { lat: number; lng: number };
   experience_years: number;
   negotiation_aggression: number;
+  pricing_strategy: VendorPricingStrategy;
   job_types: { type: string; price: number; duration_minutes: number }[];
   reviews?: string[];
   average_rating?: number;

@@ -1,10 +1,17 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ArrowRight, Sparkles, Wrench, Calendar } from 'lucide-react';
+import { ArrowRight, Sparkles, Wrench, Calendar, Info } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   Dialog,
   DialogContent,
@@ -12,6 +19,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { insertCustomer } from '@/lib/supabase-data';
+import { fetchAvgPrice } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 const SUGGESTIONS = [
@@ -20,6 +28,37 @@ const SUGGESTIONS = [
   'Install a ceiling fan in the bedroom',
   'Paint my living room walls — neutral tones',
 ];
+const SLOT_LABELS = ['8a', '9a', '10a', '11a', '12p', '1p', '2p', '3p', '4p', '5p', '6p', '7p'];
+
+function nextWeekDays(): Date[] {
+  const start = new Date();
+  start.setHours(12, 0, 0, 0);
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    return d;
+  });
+}
+
+function dateKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function formatAvailabilityForNotes(selected: Set<string>): string {
+  if (selected.size === 0) return 'No availability provided.';
+
+  const grouped: Record<string, string[]> = {};
+  const sorted = [...selected].sort();
+  for (const key of sorted) {
+    const [day, slot] = key.split('|');
+    if (!grouped[day]) grouped[day] = [];
+    grouped[day].push(slot);
+  }
+
+  return Object.entries(grouped)
+    .map(([day, slots]) => `${day}: ${slots.join(', ')}`)
+    .join('\n');
+}
 
 function inferServiceFromPrompt(prompt: string): string {
   const lower = prompt.toLowerCase();
@@ -33,30 +72,14 @@ function inferServiceFromPrompt(prompt: string): string {
   return service;
 }
 
-function extractMaxBudget(prompt: string): number | null {
-  const text = prompt.toLowerCase();
-
-  // Strong signal: explicit currency mention.
-  const dollarMatch = text.match(/\$\s*([0-9]{2,5})\b/);
-  if (dollarMatch) return parseInt(dollarMatch[1], 10);
-
-  // Soft signal: a number paired with budget-limit wording.
-  const maxBudgetPatterns = [
-    /max(?:imum)?(?:\s+budget)?\s*(?:is|of|:)?\s*\$?\s*([0-9]{2,5})\b/i,
-    /(?:under|below|less than|up to|within)\s*\$?\s*([0-9]{2,5})\b/i,
-    /(?:budget|spend)\s*(?:is|of|around|about)?\s*\$?\s*([0-9]{2,5})\b/i,
-  ];
-
-  for (const pattern of maxBudgetPatterns) {
-    const match = prompt.match(pattern);
-    if (match?.[1]) return parseInt(match[1], 10);
-  }
-
-  return null;
-}
 
 export function PromptPage() {
   const [prompt, setPrompt] = useState('');
+  const [urgency, setUrgency] = useState('');
+  const [budgetStr, setBudgetStr] = useState('');
+  const [avgPrice, setAvgPrice] = useState<{ avg_price: number; job_count: number; matched_types: string[] } | null>(null);
+  const [avgPriceLoading, setAvgPriceLoading] = useState(false);
+  const [selectedAvailability, setSelectedAvailability] = useState<Set<string>>(new Set());
   const [customerOpen, setCustomerOpen] = useState(false);
   const [customerSearch, setCustomerSearch] = useState('');
   const [newCustomerName, setNewCustomerName] = useState('');
@@ -66,30 +89,79 @@ export function PromptPage() {
   const location = useLocation();
   const promptSelectCustomer = (location.state as { promptSelectCustomer?: boolean } | null)?.promptSelectCustomer ?? false;
   const { setLastPrompt, customers, selectedCustomer, setSelectedCustomer, refetchCustomers, dataError, setNegotiateParams } = useApp();
-  const [budgetWarningOpen, setBudgetWarningOpen] = useState(false);
+  const weekDays = nextWeekDays();
 
-  const handleSubmit = (allowAutoBudget = false) => {
-    const trimmed = prompt.trim();
-    if (!trimmed) return;
+  // Track the last query we fetched avg price for to avoid redundant calls
+  const lastFetchedQuery = useRef('');
 
-    const service = inferServiceFromPrompt(trimmed);
-    const parsedBudget = extractMaxBudget(trimmed);
+  // Only trigger the fetch once the user has typed a meaningful description
+  const trimmedPrompt = prompt.trim();
+  const hasDescription = trimmedPrompt.length > 10;
+  const inferredService = hasDescription ? inferServiceFromPrompt(prompt) : '';
 
-    if (!parsedBudget && !allowAutoBudget) {
-      setBudgetWarningOpen(true);
+  const fetchAvg = useCallback(async (query: string, service: string) => {
+    if (!query || query === lastFetchedQuery.current) return;
+    lastFetchedQuery.current = query;
+    setAvgPriceLoading(true);
+    try {
+      const data = await fetchAvgPrice(query, service);
+      setAvgPrice(data);
+    } catch {
+      setAvgPrice(null);
+    } finally {
+      setAvgPriceLoading(false);
+    }
+  }, []);
+
+  // Debounce: fetch avg price 800ms after the user stops typing
+  useEffect(() => {
+    if (!hasDescription) {
+      setAvgPrice(null);
+      lastFetchedQuery.current = '';
       return;
     }
+    const timer = setTimeout(() => fetchAvg(trimmedPrompt, inferredService), 800);
+    return () => clearTimeout(timer);
+  }, [trimmedPrompt, inferredService, hasDescription, fetchAvg]);
 
-    const budget = parsedBudget ?? 200;
+  const toggleAvailabilitySlot = (day: Date, slotLabel: string) => {
+    const key = `${dateKey(day)}|${slotLabel}`;
+    setSelectedAvailability((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const selectEntireDay = (day: Date) => {
+    const dayPrefix = `${dateKey(day)}|`;
+    setSelectedAvailability((prev) => {
+      const next = new Set(prev);
+      SLOT_LABELS.forEach((slotLabel) => {
+        next.add(`${dayPrefix}${slotLabel}`);
+      });
+      return next;
+    });
+  };
+
+  const handleSubmit = () => {
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+    if (!urgency) return;
+
+    const service = inferServiceFromPrompt(trimmed);
+    const budget = budgetStr ? parseInt(budgetStr, 10) : (avgPrice?.avg_price || 200);
+
     setLastPrompt(trimmed);
-    setBudgetWarningOpen(false);
+    const availabilityNote = formatAvailabilityForNotes(selectedAvailability);
 
     setNegotiateParams({
       service,
       budget,
-      urgency: 3,
+      urgency: parseInt(urgency, 10),
       aggression: 3,
-      notes: trimmed,
+      notes: `${trimmed}\n\nCUSTOMER_AVAILABILITY_NEXT_7_DAYS:\n${availabilityNote}`,
     });
 
     navigate('/customer/agents');
@@ -215,6 +287,137 @@ export function PromptPage() {
               autoFocus
             />
 
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">How urgent is this job?</p>
+              <Select value={urgency} onValueChange={setUrgency}>
+                <SelectTrigger className="bg-card">
+                  <SelectValue placeholder="Select urgency" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">1 - Low (flexible timing)</SelectItem>
+                  <SelectItem value="2">2 - Soon (within a week)</SelectItem>
+                  <SelectItem value="3">3 - Medium (next few days)</SelectItem>
+                  <SelectItem value="4">4 - High (as soon as possible)</SelectItem>
+                  <SelectItem value="5">5 - Emergency (today)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Maximum budget — shown once the user types a job description */}
+            {prompt.trim().length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-xs text-muted-foreground">Maximum budget</p>
+                <div className="flex items-center gap-3">
+                  <div className="relative flex-1">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={budgetStr}
+                      onChange={(e) => setBudgetStr(e.target.value)}
+                      placeholder={
+                        avgPrice && avgPrice.avg_price > 0
+                          ? String(avgPrice.avg_price)
+                          : '200'
+                      }
+                      className="bg-card pl-7 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    />
+                  </div>
+                  {avgPriceLoading ? (
+                    <p className="text-[11px] text-muted-foreground/60 flex-shrink-0 animate-pulse">
+                      Looking up similar jobs...
+                    </p>
+                  ) : avgPrice && avgPrice.avg_price > 0 ? (
+                    <div className="flex items-start gap-1.5 flex-shrink-0 max-w-[260px]">
+                      <Info className="size-3.5 text-primary mt-0.5 flex-shrink-0" />
+                      <p className="text-[11px] text-muted-foreground leading-snug">
+                        Similar jobs average{' '}
+                        <span className="text-foreground font-semibold">${avgPrice.avg_price}</span>
+                        <span className="text-muted-foreground/50">
+                          {' '}({avgPrice.job_count} past job{avgPrice.job_count === 1 ? '' : 's'}
+                          {avgPrice.matched_types.length > 0 && (
+                            <> &mdash; {avgPrice.matched_types.join(', ')}</>
+                          )}
+                          )
+                        </span>
+                      </p>
+                    </div>
+                  ) : avgPrice && avgPrice.job_count === 0 ? (
+                    <div className="flex items-start gap-1.5 flex-shrink-0 max-w-[220px]">
+                      <Info className="size-3.5 text-muted-foreground mt-0.5 flex-shrink-0" />
+                      <p className="text-[11px] text-muted-foreground leading-snug">
+                        No similar past jobs found to estimate price.
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            )}
+
+            {urgency && (
+              <div className="space-y-2 rounded-xl border border-border/60 bg-card/40 p-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium text-foreground">Your availability for the next week</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {selectedAvailability.size} slot{selectedAvailability.size === 1 ? '' : 's'} selected
+                  </p>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Click cells to mark when you are free.
+                </p>
+                <div className="overflow-x-auto">
+                  <div className="min-w-[760px]">
+                    <div className="grid grid-cols-8 gap-1">
+                      <div className="h-9" />
+                      {weekDays.map((day) => (
+                        <button
+                          key={dateKey(day)}
+                          type="button"
+                          onClick={() => selectEntireDay(day)}
+                          className="h-9 rounded-md bg-muted/40 px-2 py-1 text-center transition-colors hover:bg-muted/70"
+                          aria-label={`Select all time slots on ${day.toDateString()}`}
+                        >
+                          <p className="text-[10px] text-muted-foreground">
+                            {day.toLocaleDateString('en-US', { weekday: 'short' })}
+                          </p>
+                          <p className="text-[11px] font-medium text-foreground">
+                            {day.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}
+                          </p>
+                        </button>
+                      ))}
+                      {SLOT_LABELS.map((slotLabel) => (
+                        <div key={`row-${slotLabel}`} className="contents">
+                          <div
+                            className="h-8 flex items-center justify-end pr-2 text-[10px] text-muted-foreground"
+                          >
+                            {slotLabel}
+                          </div>
+                          {weekDays.map((day) => {
+                            const key = `${dateKey(day)}|${slotLabel}`;
+                            const active = selectedAvailability.has(key);
+                            return (
+                              <button
+                                key={key}
+                                type="button"
+                                onClick={() => toggleAvailabilitySlot(day, slotLabel)}
+                                className={cn(
+                                  'h-8 rounded-sm border transition-colors',
+                                  active
+                                    ? 'border-primary/70 bg-primary/25 hover:bg-primary/30'
+                                    : 'border-border/60 bg-background hover:bg-muted/60'
+                                )}
+                                aria-label={`Toggle ${day.toDateString()} ${slotLabel}`}
+                              />
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="relative -mx-6 overflow-hidden">
               <style>{`
                 @keyframes marquee {
@@ -249,7 +452,7 @@ export function PromptPage() {
 
             <Button
               onClick={() => handleSubmit()}
-              disabled={!prompt.trim()}
+              disabled={!prompt.trim() || !urgency}
               size="lg"
               className="w-full rounded-xl text-base font-medium gap-2"
             >
@@ -328,30 +531,6 @@ export function PromptPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Budget warning dialog */}
-      <Dialog open={budgetWarningOpen} onOpenChange={setBudgetWarningOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Add a max price?</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3 text-sm">
-            <p className="text-muted-foreground">
-              No maximum price was detected in your request. Add a max budget to better guide negotiation.
-            </p>
-            <p className="text-muted-foreground">
-              If you continue, the agent will pick a budget for this request.
-            </p>
-            <div className="flex justify-end gap-2 pt-1">
-              <Button variant="outline" onClick={() => setBudgetWarningOpen(false)}>
-                I&apos;ll add a max price
-              </Button>
-              <Button onClick={() => handleSubmit(true)}>
-                Let agent pick for me
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
