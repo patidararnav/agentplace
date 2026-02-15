@@ -20,7 +20,7 @@ type JobTypeRow = { type: string; price: string; duration_minutes: string };
 
 export function NewVendorPage() {
   const navigate = useNavigate();
-  const { setSelectedVendor, refetchVendors, vendors } = useApp();
+  const { setSelectedVendor, refetchVendors } = useApp();
 
   const [name, setName] = useState("");
   const [maxDistanceMiles, setMaxDistanceMiles] = useState("25");
@@ -117,11 +117,7 @@ export function NewVendorPage() {
       return;
     }
 
-    const nextId = vendors.length > 0
-      ? Math.max(...vendors.map((v) => v.vendor_id)) + 1
-      : 1;
     const payload = {
-      vendor_id: nextId,
       name: trimName,
       max_distance_miles: Number(maxDistanceMiles) || 25,
       home_location: { lat: location.lat, lng: location.lng },
@@ -139,7 +135,7 @@ export function NewVendorPage() {
     const created = await insertVendor(payload);
     if (!created) {
       setSubmitting(false);
-      setError("Failed to create vendor in browser storage.");
+      setError("Failed to create vendor in Supabase.");
       return;
     }
 
@@ -149,7 +145,7 @@ export function NewVendorPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          vendor_id: nextId,
+          vendor_id: created.vendor_id,
           name: trimName,
           services: jobTypesPayload.map((jt) => jt.type.toLowerCase()),
           base_prices: Object.fromEntries(

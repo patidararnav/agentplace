@@ -80,6 +80,14 @@ function rowToJob(row: Record<string, unknown>): JobData {
     status: (Number(row.status) ?? 1) as JobData['status'],
   };
 }
+
+function upsertLocalJob(job: JobData): void {
+  const jobs = readList<JobData>(STORAGE_KEYS.jobs);
+  const idx = jobs.findIndex((j) => j.job_id === job.job_id);
+  if (idx >= 0) jobs[idx] = job;
+  else jobs.push(job);
+  writeList(STORAGE_KEYS.jobs, jobs);
+}
   
 function ensureInitialized(): void {
   const storage = getStorage();
@@ -291,6 +299,50 @@ export async function updateJobStatus(
   return { ok: true };
 }
 
+/** Creates a job row in Supabase via backend API (service key). Used when customer accepts a quote. */
+export async function createJob(payload: {
+  vendor_id: number;
+  vendor_name?: string;
+  consumer_name: string;
+  job_type: string;
+  price: number;
+  duration_minutes?: number;
+  date?: string;
+  start_time?: string;
+  status?: number;
+}): Promise<{ data: JobData } | { error: string }> {
+  try {
+    const res = await fetch('/api/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        vendor_id: payload.vendor_id,
+        vendor_name: payload.vendor_name ?? '',
+        consumer_name: payload.consumer_name,
+        job_type: payload.job_type,
+        price: payload.price,
+        duration_minutes: payload.duration_minutes ?? 60,
+        date: payload.date ?? null,
+        start_time: payload.start_time ?? '09:00',
+        status: payload.status ?? 5,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = String(data?.detail ?? data?.error ?? `Server error: ${res.status}`);
+      return { error: msg };
+    }
+    if (!data?.ok || !data?.job) return { error: 'No job returned from backend' };
+    const mapped = rowToJob(data.job as Record<string, unknown>);
+    upsertLocalJob(mapped);
+    return { data: mapped };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'Failed to create job';
+    console.warn('createJob API:', msg);
+    return { error: msg };
+  }
+}
+
 /** Insert new vendor into Supabase public."VendorData". Falls back to localStorage on error. */
 export async function insertVendor(payload: {
   vendor_id?: number;
@@ -307,6 +359,25 @@ export async function insertVendor(payload: {
   average_rating?: string | number | null;
   total_ratings?: string | number | null;
 }): Promise<VendorData | null> {
+  const strategy = normalizeVendorPricingStrategy(payload.pricing_strategy);
+
+  try {
+    const res = await fetch('/api/data/vendors', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...payload,
+        pricing_strategy: strategy,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data?.ok && data?.vendor) {
+      return rowToVendor(data.vendor as Record<string, unknown>);
+    }
+  } catch (e) {
+    console.warn('insertVendor API:', e);
+  }
+
   let nextId = payload.vendor_id;
   if (nextId == null) {
     const { data: existing } = await supabase
@@ -317,7 +388,6 @@ export async function insertVendor(payload: {
       .maybeSingle();
     nextId = existing?.vendor_id != null ? Number(existing.vendor_id) + 1 : 1;
   }
-  const strategy = normalizeVendorPricingStrategy(payload.pricing_strategy);
   const row: Record<string, unknown> = {
     vendor_id: nextId,
     name: payload.name,
@@ -389,6 +459,24 @@ export async function updateVendor(
   }
 ): Promise<VendorData | null> {
   const strategy = normalizeVendorPricingStrategy(payload.pricing_strategy);
+
+  try {
+    const res = await fetch(`/api/data/vendors/${vendorId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...payload,
+        pricing_strategy: strategy,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data?.ok && data?.vendor) {
+      return rowToVendor(data.vendor as Record<string, unknown>);
+    }
+  } catch (e) {
+    console.warn('updateVendor API:', e);
+  }
+
   const row: Record<string, unknown> = {
     name: payload.name,
     weekly_availability: payload.weekly_availability,
@@ -438,6 +526,24 @@ export async function insertCustomer(payload: {
   job_count?: number;
   job_ids?: number[] | null;
 }): Promise<{ data: CustomerData } | { error: string }> {
+  try {
+    const res = await fetch('/api/data/customers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        consumer_name: payload.consumer_name,
+        job_count: payload.job_count ?? 0,
+        job_ids: payload.job_ids ?? [],
+      }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (res.ok && json?.ok && json?.customer) {
+      return { data: rowToCustomer(json.customer as Record<string, unknown>) };
+    }
+  } catch (e) {
+    console.warn('insertCustomer API:', e);
+  }
+
   const row = {
     consumer_name: payload.consumer_name,
     job_count: payload.job_count ?? 0,

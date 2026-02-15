@@ -28,6 +28,11 @@ export function NegotiationChatModal({ messages, vendorName, onClose }: Negotiat
 
         <ScrollArea className="flex-1 min-h-0">
           <div className="p-5 space-y-4">
+            {messages.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                No negotiation messages yet.
+              </p>
+            )}
             {messages.map((msg, i) => {
               const isCustomerAgent = msg.role === 'customer-agent';
               return (

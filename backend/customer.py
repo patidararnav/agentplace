@@ -12,6 +12,7 @@ import asyncio
 import os
 import random
 import re
+from urllib.parse import quote
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -65,7 +66,6 @@ def create_customer_agent(
     urgency: int = 3,
     aggression: int = 3,
     notes: str = "",
-    consumer_name: str = "",
     orchestrator_address: str,
     port: Optional[int] = None,
     mailbox: bool = False,
@@ -151,18 +151,17 @@ def create_customer_agent(
         )
 
     def _request_text() -> str:
-        lines = [
+        # Keep NOTES on a single line; parse_fields() is line-based.
+        notes_urlenc = quote(notes or "", safe="")
+        return "\n".join([
             "TYPE=request",
             f"RID={rid}",
             f"SERVICE={service}",
             f"BUDGET={budget}",
             f"URGENCY={urgency}",
-            f"NOTES={notes}",
+            f"NOTES_URLENC={notes_urlenc}",
             "TEXT=Please help me find the best vendor and negotiate in natural language.",
-        ]
-        if consumer_name:
-            lines.insert(-1, f"CONSUMER_NAME={consumer_name}")
-        return "\n".join(lines)
+        ])
 
     # ── helpers for result tracking ──
 
@@ -192,19 +191,17 @@ def create_customer_agent(
 
     @agent.on_event("startup")
     async def on_startup(ctx: Context) -> None:
-        print(f"[DEBUG] Customer {name} on_startup FIRED", flush=True)
         if not os.getenv("AGENTVERSE_KEY") and mailbox:
             ctx.logger.warning("AGENTVERSE_KEY is not set.")
         if startup_delay > 0:
             ctx.logger.info("Waiting %.1fs for vendors to register...", startup_delay)
             await asyncio.sleep(startup_delay)
         ctx.logger.info(
-            "Sending request  RID=%s  service=%s  budget=$%s",
-            rid, service, budget,
+            "Sending request  RID=%s  service=%s  budget=$%s  urgency=%s  notes_len=%d",
+            rid, service, budget, urgency, len(notes or ""),
         )
-        print(f"[DEBUG] Customer {name} sending request to orchestrator...", flush=True)
-        result = await ctx.send(orchestrator_address, make_chat_message(_request_text()))
-        print(f"[DEBUG] Customer {name} ctx.send() returned: {result}", flush=True)
+        request_payload = _request_text()
+        await ctx.send(orchestrator_address, make_chat_message(request_payload))
 
     @chat_proto.on_message(model=ChatMessage)
     async def handle_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
@@ -247,10 +244,12 @@ def create_customer_agent(
             outcome = fields.get("OUTCOME", "?")
             price_s = fields.get("PRICE", "0")
             rounds_s = fields.get("ROUNDS", "0")
+            vendor_id_s = fields.get("VENDOR_ID", "0")
             ctx.logger.info("VENDOR RESULT: %s  [%s]", vn, outcome)
             vr = {
                 "vendor_name": vn,
                 "vendor_address": fields.get("VENDOR", ""),
+                "vendor_id": int(vendor_id_s) if vendor_id_s.isdigit() else 0,
                 "outcome": outcome,
                 "price": int(price_s) if price_s.isdigit() else 0,
                 "rounds": int(rounds_s) if rounds_s.isdigit() else 0,
@@ -294,16 +293,11 @@ def create_customer_agent(
             _record("winner", fields.get("WINNER", ""))
             wp = fields.get("WINNER_PRICE", "0")
             _record("winner_price", int(wp) if wp.isdigit() else 0)
-            job_id_s = fields.get("JOB_ID", "")
-            winner_job_id = int(job_id_s) if job_id_s.isdigit() else None
-            if winner_job_id is not None:
-                _record("winner_job_id", winner_job_id)
             _push_event({
                 "type": "deal_closed",
                 "text": txt,
                 "winner": fields.get("WINNER", ""),
                 "winner_price": int(wp) if wp.isdigit() else 0,
-                **({"winner_job_id": winner_job_id} if winner_job_id is not None else {}),
             })
             _finish()
             return
@@ -314,11 +308,14 @@ def create_customer_agent(
             ctx.logger.info("TERMINATED: %s", txt)
             _append("terminations", txt)
             _push_event({"type": "terminated", "text": txt})
+            llm_failed = "LLM failed" in txt
+            if llm_failed:
+                _push_event({"type": "error", "text": txt})
             if any(p in txt for p in [
                 "All vendor negotiations ended",
                 "All vendors unavailable",
                 "No vendors found",
-            ]):
+            ]) or llm_failed:
                 terminated = True
                 _record("outcome", "no_deal")
                 _record("outcome_text", txt)

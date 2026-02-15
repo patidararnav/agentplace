@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 _llm_client: Optional[AsyncOpenAI] = None
 
 
+class LLMCallError(RuntimeError):
+    """Raised when strict LLM generation cannot complete."""
+
+
 def get_llm_client() -> Optional[AsyncOpenAI]:
     global _llm_client
     api_key = os.getenv("ASI1_API_KEY", "")
@@ -33,9 +37,12 @@ async def generate_text(
     *,
     max_tokens: int = 120,
     temperature: float = 0.8,
+    strict: bool = False,
 ) -> str:
     client = get_llm_client()
     if client is None:
+        if strict:
+            raise LLMCallError("LLM client unavailable (ASI1_API_KEY missing).")
         return fallback
     try:
         response = await client.chat.completions.create(
@@ -48,8 +55,16 @@ async def generate_text(
             temperature=temperature,
         )
         text = (response.choices[0].message.content or "").strip()
-        return text if text else fallback
+        if text:
+            return text
+        if strict:
+            raise LLMCallError("LLM returned an empty response.")
+        return fallback
+    except LLMCallError:
+        raise
     except Exception as exc:
+        if strict:
+            raise LLMCallError(str(exc)) from exc
         logger.warning("LLM call failed, using fallback: %s", exc)
         return fallback
 
