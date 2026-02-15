@@ -113,47 +113,57 @@ export function AgentMatchingPage() {
 
   const completionStartedAt = useRef<number | null>(null);
 
-  // Navigate to results when done, only after the full 4-step animation has finished
+  // Navigate to results when done (even with no options), after the full 4-step animation has finished
   useEffect(() => {
-    if (negotiation.isComplete && negotiation.outcome && !hasNavigated.current) {
-      if (completionStartedAt.current === null) {
-        completionStartedAt.current = Date.now();
-      }
+    if (!negotiation.isComplete || hasNavigated.current) return;
 
-      const quotes = buildQuotes(negotiation.vendorResults, negotiation.vendors);
-      const totalVendors = Math.max(
-        Object.keys(negotiation.vendors).length,
-        negotiation.vendorResults.length,
-      );
-      const deals = quotes.length;
-      const avgSavings = deals > 0
-        ? Math.round(quotes.reduce((acc, q) => acc + ((q.originalPrice - q.price) / q.originalPrice) * 100, 0) / deals)
-        : 0;
-
-      const results: NegotiationResults = {
-        quotes,
-        stats: {
-          vendorsSearched: totalVendors,
-          vendorsNegotiated: totalVendors,
-          avgSavings,
-        },
-        outcome: negotiation.outcome.outcome,
-        winner: negotiation.outcome.winner,
-        winnerPrice: negotiation.outcome.winner_price,
-      };
-
-      setNegotiationResults(results);
-
-      hasNavigated.current = true;
-
-      const elapsed = Date.now() - (completionStartedAt.current ?? Date.now());
-      const stepsRemaining = Math.max(0, SYSTEM_AGENTS.length - animationIndex);
-      const waitForAnimation = stepsRemaining * STEP_DURATION_MS + MIN_DELAY_AFTER_COMPLETION_MS;
-      const remaining = Math.max(waitForAnimation, Math.max(0, MIN_DELAY_AFTER_COMPLETION_MS - elapsed));
-
-      const t = setTimeout(() => navigate('/customer/results'), remaining);
-      return () => clearTimeout(t);
+    if (completionStartedAt.current === null) {
+      completionStartedAt.current = Date.now();
     }
+
+    const outcome = negotiation.outcome ?? {
+      type: 'done' as const,
+      outcome: 'no_deal',
+      outcome_text: 'No options available.',
+      winner: '',
+      winner_price: 0,
+      vendor_results: negotiation.vendorResults,
+      config: {},
+    };
+
+    const quotes = buildQuotes(negotiation.vendorResults, negotiation.vendors);
+    const totalVendors = Math.max(
+      Object.keys(negotiation.vendors).length,
+      negotiation.vendorResults.length,
+    );
+    const deals = quotes.length;
+    const avgSavings = deals > 0
+      ? Math.round(quotes.reduce((acc, q) => acc + ((q.originalPrice - q.price) / q.originalPrice) * 100, 0) / deals)
+      : 0;
+
+    const results: NegotiationResults = {
+      quotes,
+      stats: {
+        vendorsSearched: totalVendors,
+        vendorsNegotiated: totalVendors,
+        avgSavings,
+      },
+      outcome: outcome.outcome,
+      winner: outcome.winner,
+      winnerPrice: outcome.winner_price,
+    };
+
+    setNegotiationResults(results);
+
+    hasNavigated.current = true;
+
+    const elapsed = Date.now() - (completionStartedAt.current ?? Date.now());
+    const stepsRemaining = Math.max(0, SYSTEM_AGENTS.length - animationIndex);
+    const waitForAnimation = stepsRemaining * STEP_DURATION_MS + MIN_DELAY_AFTER_COMPLETION_MS;
+    const remaining = Math.max(waitForAnimation, Math.max(0, MIN_DELAY_AFTER_COMPLETION_MS - elapsed));
+
+    const t = setTimeout(() => navigate('/customer/results'), remaining);
+    return () => clearTimeout(t);
   }, [negotiation.isComplete, negotiation.outcome, negotiation.vendorResults, negotiation.vendors, navigate, setNegotiationResults, animationIndex]);
 
   return (
