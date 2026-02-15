@@ -444,7 +444,7 @@ export function AgentMatchingPage() {
                 <p className="text-xs text-muted-foreground">Your agent network is actively handling live vendor conversations.</p>
                 {lastPrompt && (
                   <p className="text-[11px] text-muted-foreground/80 truncate max-w-[540px] mt-1">
-                    &ldquo;{lastPrompt}&rdquo;
+                    &ldquo;{lastPrompt}&rdquo; <span className="text-muted-foreground/70">{negotiateParams ? ` | max $${negotiateParams.budget}` : ''}</span>
                   </p>
                 )}
               </div>

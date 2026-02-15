@@ -142,9 +142,18 @@ export function PromptPage() {
     const dayPrefix = `${dateKey(day)}|`;
     setSelectedAvailability((prev) => {
       const next = new Set(prev);
-      SLOT_LABELS.forEach((slotLabel) => {
-        next.add(`${dayPrefix}${slotLabel}`);
-      });
+      const allSelected = SLOT_LABELS.every((slotLabel) =>
+        next.has(`${dayPrefix}${slotLabel}`)
+      );
+      if (allSelected) {
+        SLOT_LABELS.forEach((slotLabel) => {
+          next.delete(`${dayPrefix}${slotLabel}`);
+        });
+      } else {
+        SLOT_LABELS.forEach((slotLabel) => {
+          next.add(`${dayPrefix}${slotLabel}`);
+        });
+      }
       return next;
     });
   };
