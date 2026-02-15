@@ -22,7 +22,7 @@ export function LandingPage() {
             <Sparkles className="size-4 text-primary-foreground" />
           </div>
           <span className="text-base font-semibold tracking-tight text-foreground">
-            Agent Place
+            AgentPlace
           </span>
         </div>
         <button

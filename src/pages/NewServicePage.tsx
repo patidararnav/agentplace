@@ -20,7 +20,7 @@ export function NewServicePage() {
   const [error, setError] = useState("");
 
   async function handleSubmit() {
-    if (!serviceName.trim() || !jobType.trim() || !hourlyRate.trim()) {
+    if (!serviceName.trim() || !jobType.trim() || !price.trim()) {
       setError("All fields are required.");
       return;
     }
@@ -35,7 +35,7 @@ export function NewServicePage() {
           vendor_name: selectedVendor?.name ?? "Unknown",
           service_name: serviceName.trim(),
           job_type: jobType.trim().toLowerCase(),
-          price: Number(hourlyRate) || 0,
+          price: Number(price) || 0,
           duration_minutes: Number(durationMinutes) || 60,
         }),
       });
@@ -97,7 +97,7 @@ export function NewServicePage() {
             </div>
             <div>
               <h1 className="text-lg font-semibold text-foreground leading-tight">
-                Agent Place
+                AgentPlace
               </h1>
               <p className="text-xs text-muted-foreground">New Service</p>
             </div>

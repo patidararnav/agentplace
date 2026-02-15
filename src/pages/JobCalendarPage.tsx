@@ -71,7 +71,7 @@ export function JobCalendarPage() {
       return;
     }
     setJobsLoading(true);
-    const jobIds = (selectedCustomer.job_ids ?? []).map((id) => Number(id));
+    const jobIds = (selectedCustomer.job_ids ?? []).map((id: number | string) => Number(id));
     fetchJobsForCustomer(
       selectedCustomer.consumer_name,
       jobIds.length > 0 ? jobIds : undefined

@@ -64,7 +64,7 @@ export function MapViewPage() {
               <Sparkles className="size-4 text-primary-foreground" />
             </div>
             <div>
-              <h1 className="text-base font-semibold text-foreground">Agent Place</h1>
+              <h1 className="text-base font-semibold text-foreground">AgentPlace</h1>
               {lastPrompt && (
                 <p className="text-xs text-muted-foreground truncate max-w-[300px]">
                   &ldquo;{lastPrompt}&rdquo;
