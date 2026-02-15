@@ -79,6 +79,7 @@ Browser (React + Vite)
 | Agent | Mailbox | Endpoint | Setup |
 |-------|---------|----------|-------|
 | **Orchestrator** | `mailbox=True` (Agentverse) | Mailbox | One-time manual setup via [Agent Inspector](https://agentverse.ai/inspect) |
+| **Payment agent** | `mailbox=True` (Agentverse) | `http://127.0.0.1:8300` (or your server URL) | Register address + endpoint in [Agent Inspector](https://agentverse.ai/inspect) |
 | **Vendor agents** | `mailbox=False` | `http://127.0.0.1:<port>/submit` | Automatic — no manual setup |
 | **Customer agents** | `mailbox=False` | `http://127.0.0.1:<port>/submit` | Automatic — ephemeral, created per request |
 
@@ -144,14 +145,22 @@ If you see `SSL: CERTIFICATE_VERIFY_FAILED` errors, run this before starting the
 export SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")
 ```
 
-### 4. Set up the Orchestrator mailbox (one-time)
+### 4. Set up Agentverse (one-time)
 
-The orchestrator is the only agent that needs manual Agentverse mailbox setup:
+Two agents use Agentverse and need manual registration in [Agent Inspector](https://agentverse.ai/inspect):
+
+**Orchestrator**
 
 1. Start the backend once (step 5 below).
-2. Copy the orchestrator's address from the terminal logs.
-3. Go to the [Agent Inspector](https://agentverse.ai/inspect) and create a mailbox for that address.
+2. Copy the orchestrator's address from the terminal logs (e.g. `Orchestrator … address=agent1q...`).
+3. In Agent Inspector, create a mailbox for that address.
 4. Restart the backend. You should see `Successfully registered as mailbox agent in Agentverse`.
+
+**Payment agent** (for FET on-chain payment verification)
+
+1. After the backend has started, copy the payment agent's address from the logs (e.g. `Payment agent … address=agent1q...`).
+2. In Agent Inspector, add the payment agent with that **address** and **endpoint URI** `http://127.0.0.1:8300` (or your server's public URL and port in production).
+3. Demo payers need testnet FET; use the [Fetch.ai Testnet Faucet](https://companion.sandbox-london-b.fetch-ai.com/dorado-1/agents#Agents) if needed.
 
 ### 5. Start the backend
 
@@ -171,6 +180,8 @@ You'll see color-coded terminal output:
 [vendor]  PremiumPipes  address=agent1qga0...   port=8103
 ━━━ 4 persistent agents launched (orchestrator + 3 vendors) ━━━
 ```
+
+**After the backend is up:** see [backend/SETUP_AFTER_STARTUP.md](backend/SETUP_AFTER_STARTUP.md) to register the payment agent in Agent Inspector and add at least one vendor via `POST /api/vendors` (or run `./backend/scripts/add_sample_vendor.sh`).
 
 ### 6. Start the frontend
 
@@ -212,6 +223,24 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 
 - **Vendor calendar**, **customer calendar**, and **job tracking** screens query Supabase and **poll every 5 seconds** so changes (e.g. from another tab or device) appear without refreshing the page.
 - A full page refresh does refetch vendors and customers from the database; the calendar and tracking screens also refetch their data on load. The global "jobs" list in app context is backed by localStorage, so for the latest job data use the calendar or tracking views, which read from Supabase.
+
+### Connecting local agents to Agentverse Inspector
+
+To see your local orchestrator and vendor agents in the [Agentverse Inspector](https://agentverse.ai/inspect):
+
+1. **Keep the backend running** — If you see `[Errno 10048] ... bind on address ('0.0.0.0', 8080)` then something else is using port 8080 and the server exits; agents shut down and the inspector has nothing to connect to. Stop the other process (e.g. close any other terminal running the backend, or run `Get-NetTCPConnection -LocalPort 8080` in PowerShell to find the PID and stop it) and start the backend again.
+
+2. **Use the URL printed in the terminal** — After startup you’ll see a line like:
+   ```text
+   Agent inspector available at https://agentverse.ai/inspect/?uri=http%3A//127.0.0.1%3A8001&address=agent1q0sewr2...
+   ```
+   Open **that full URL** in Chrome. It points the inspector at your local orchestrator (port 8001).
+
+3. **Or add the agent manually** — On [agentverse.ai/inspect](https://agentverse.ai/inspect), look for “Add agent”, “Connect”, or a field to enter an agent URL. Use:
+   - **Orchestrator:** `http://127.0.0.1:8001`
+   - **Vendors (optional):** `http://127.0.0.1:8100`, `http://127.0.0.1:8101`, … (one per vendor).
+
+The inspector does not auto-discover localhost; you must use the link from the terminal or add the URL yourself.
 
 ### What shows in the terminal
 
@@ -314,6 +343,9 @@ Create `backend/.env` from `backend/.env.example`. Key variables:
 | `ORCHESTRATOR_SEED` | No | Deterministic seed for orchestrator identity (default provided) |
 | `ORCHESTRATOR_PORT` | No | Port for orchestrator local server (default: `8001`) |
 | `MAX_NEGOTIATION_ROUNDS` | No | Max rounds before force-closing (default: `8`) |
+| `PAYMENT_AGENT_SEED` | No | Seed for payment agent (default in .env.example) |
+| `PAYMENT_AGENT_PORT` | No | Payment agent port (default: `8300`) |
+| `FET_USE_TESTNET` | No | Use Fetch.ai testnet for payments (default: `true`) |
 
 Vendor agents are configured in `server.py`'s `VENDOR_DEFS` array, or created dynamically via `POST /api/vendors`.
 

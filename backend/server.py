@@ -35,7 +35,7 @@ from typing import Any, Dict
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -45,7 +45,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from customer import create_customer_agent
 from db_helpers import load_all_vendors, vendor_row_to_agent_config
 from orchestrator import create_orchestrator_agent
+from db_helpers import load_job
+from buyer_agent import (
+    StartPayment,
+    SubmitPaymentProof,
+    DeclinePayment,
+    create_buyer_agent,
+    get_payment_state,
+    get_stored_request,
+)
 from vendor import create_vendor_agent
+from uagents.communication import send_message
+from uagents.resolver import GlobalResolver, Resolver
+from uagents_core.identity import Identity
 
 load_dotenv()
 
@@ -54,6 +66,11 @@ load_dotenv()
 # requires calling the faucet (~5 s per agent).  For local dev the
 # Almanac REST API is sufficient for agent discovery.
 from uagents.registration import AlmanacApiRegistrationPolicy
+
+try:
+    from uagents.setup import fund_agent_if_low
+except ImportError:
+    fund_agent_if_low = None  # type: ignore
 
 # ─── Logging ──────────────────────────────────────────────────────────────
 
@@ -77,6 +94,28 @@ ORCHESTRATOR_PORT = int(os.getenv("ORCHESTRATOR_PORT", "8001"))
 VENDOR_PORT_START = int(os.getenv("VENDOR_PORT_START", "8100"))
 MAX_ROUNDS = int(os.getenv("MAX_NEGOTIATION_ROUNDS", "5"))
 
+BUYER_AGENT_PORT = int(os.getenv("BUYER_AGENT_PORT", "9300"))
+# Identity used when the API sends CommitPayment / TriggerRequestPayment (buyer in payment protocol)
+_API_PAYER_SEED = "api_payer_agentplace_2026"
+_api_payer_identity: Identity | None = None
+
+
+class _LocalAgentResolver(Resolver):
+    """Resolves locally-running agents (buyer + all vendor agents) to their HTTP endpoints."""
+
+    def __init__(self) -> None:
+        self._endpoints: dict[str, str] = {}  # agent_address → http endpoint
+        self._global = GlobalResolver()
+
+    def register(self, address: str, endpoint: str) -> None:
+        self._endpoints[address] = endpoint
+
+    async def resolve(self, destination: str) -> tuple[str | None, list[str]]:
+        ep = self._endpoints.get(destination)
+        if ep:
+            return destination, [ep]
+        return await self._global.resolve(destination)
+
 # Port range for ephemeral customer agents (one per session)
 _CUSTOMER_PORT_START = 9200
 _next_customer_port = _CUSTOMER_PORT_START
@@ -98,8 +137,10 @@ app.add_middleware(
 
 _orchestrator_agent = None          # The persistent orchestrator Agent
 _orchestrator_address: str = ""     # Its Agentverse address
+_buyer_agent = None                 # Buyer agent (payment protocol; receives RequestPayment)
 _vendor_agents: list = []           # Persistent vendor Agents
 _agent_tasks: list = []             # Background asyncio tasks running agents
+_local_resolver: _LocalAgentResolver | None = None  # Resolver for buyer + all vendor agents
 
 # ─── In-memory session store ─────────────────────────────────────────────
 
@@ -111,8 +152,8 @@ sessions: Dict[str, Dict[str, Any]] = {}
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    """Create and launch persistent orchestrator + all Supabase vendor agents."""
-    global _orchestrator_agent, _orchestrator_address
+    """Create and launch persistent orchestrator, buyer agent, and all Supabase vendor agents (each vendor is a payment seller)."""
+    global _orchestrator_agent, _orchestrator_address, _buyer_agent, _api_payer_identity, _local_resolver
 
     log.info("\033[36m━━━ AgentPlace Server Starting ━━━\033[0m")
 
@@ -135,7 +176,25 @@ async def on_startup() -> None:
     )
     _agent_tasks.append(asyncio.create_task(_run_agent(_orchestrator_agent, "orchestrator")))
 
-    # ── Vendors (auto-load every vendor from Supabase) ──
+    # ── Buyer agent (payment protocol buyer; receives RequestPayment from vendor sellers) ──
+    _local_resolver = _LocalAgentResolver()
+
+    _buyer_agent = create_buyer_agent(
+        seed=_API_PAYER_SEED,
+        port=BUYER_AGENT_PORT,
+        mailbox=False,
+        network="testnet",
+        resolve=_local_resolver,
+    )
+    _api_payer_identity = Identity.from_seed(_API_PAYER_SEED, 0)
+    _local_resolver.register(_buyer_agent.address, f"http://127.0.0.1:{BUYER_AGENT_PORT}/submit")
+    log.info(
+        "\033[35m[buyer]\033[0m address=%s  port=%s  (payment protocol buyer)",
+        _buyer_agent.address, BUYER_AGENT_PORT,
+    )
+    _agent_tasks.append(asyncio.create_task(_run_agent(_buyer_agent, "payment_buyer")))
+
+    # ── Vendors (auto-load every vendor from Supabase) — each is a payment seller ──
     try:
         rows = load_all_vendors()
     except Exception as exc:
@@ -196,18 +255,20 @@ async def on_startup() -> None:
             weekly_availability=vdef.get("weekly_availability", {}),
             pricing_strategy=vdef.get("pricing_strategy", "maximize_jobs"),
             vendor_id=int(vdef.get("vendor_id", 0) or 0),
+            resolve=_local_resolver,
         )
 
         _vendor_agents.append(va)
+        _local_resolver.register(va.address, f"http://127.0.0.1:{vdef['port']}/submit")
         log.info(
-            "\033[32m[vendor]\033[0m %s  address=%s  port=%s  services=%s",
+            "\033[32m[vendor]\033[0m %s  address=%s  port=%s  services=%s  (seller)",
             vdef["name"], va.address, vdef["port"], vdef["services"],
         )
         _agent_tasks.append(asyncio.create_task(_run_agent(va, vdef["name"])))
 
     log.info(
-        "\033[36m━━━ %d persistent agents launched (orchestrator + %d vendors) ━━━\033[0m",
-        1 + len(_vendor_agents), len(_vendor_agents),
+        "\033[36m━━━ %d persistent agents launched (orchestrator + buyer + %d vendor-sellers) ━━━\033[0m",
+        1 + 1 + len(_vendor_agents), len(_vendor_agents),
     )
     log.info(
         "\033[36m    Orchestrator: %s\033[0m", _orchestrator_address,
@@ -336,9 +397,14 @@ class NegotiateRequest(BaseModel):
     service: str = Field(..., min_length=1)
     budget: int = 200
     urgency: int = 3
-    aggression: int = 3
     city: str = "Palo Alto"
+    timezone: str = "UTC"
+    duration_minutes: int = 60
+    availability_windows: list[Dict[str, Any]] = Field(default_factory=list)
+    time_price_preference: str = "balanced"
+    latest_acceptable_start_iso: str = ""
     notes: str = ""
+    consumer_name: str = ""
 
 
 class NegotiateResponse(BaseModel):
@@ -358,9 +424,9 @@ async def run_negotiation(
 
     log.info(
         "\033[36m[%s]\033[0m Starting negotiation  service=%s  budget=$%s  "
-        "urgency=%s  aggression=%s  city=%s  orchestrator=%s",
+        "urgency=%s  windows=%s  city=%s orchestrator=%s",
         session_id[:8], params.service, params.budget,
-        params.urgency, params.aggression, params.city, _orchestrator_address[:20] + "…",
+        params.urgency, len(params.availability_windows), _orchestrator_address[:20] + "…",
     )
 
     result: Dict[str, Any] = {
@@ -368,8 +434,10 @@ async def run_negotiation(
             "service": params.service,
             "budget": params.budget,
             "urgency": params.urgency,
-            "customer_aggression": params.aggression,
             "city": params.city,
+            "timezone": params.timezone,
+            "duration_minutes": params.duration_minutes,
+            "time_price_preference": params.time_price_preference,
             "vendors": [v["name"] for v in VENDOR_DEFS],
         }
     }
@@ -402,9 +470,14 @@ async def run_negotiation(
         service=params.service.lower(),
         budget=params.budget,
         urgency=params.urgency,
-        aggression=params.aggression,
         city=params.city,
         notes=params.notes or f"Requesting {params.service} service",
+        timezone_name=params.timezone,
+        duration_minutes=params.duration_minutes,
+        availability_windows=params.availability_windows,
+        time_price_preference=params.time_price_preference,
+        latest_acceptable_start_iso=params.latest_acceptable_start_iso,
+        consumer_name=params.consumer_name or "",
         orchestrator_address=_orchestrator_address,
         port=cust_port,
         mailbox=False,          # ephemeral – receives replies on local HTTP
@@ -490,6 +563,7 @@ async def run_negotiation(
         "outcome_text": result.get("outcome_text", ""),
         "winner": result.get("winner", ""),
         "winner_price": result.get("winner_price", 0),
+        "winner_job_id": result.get("winner_job_id"),
         "vendor_results": vendor_results,
         "config": result.get("config", {}),
     })
@@ -604,11 +678,211 @@ async def list_agents() -> Dict[str, Any]:
     """Return the addresses of all persistent agents (for debugging)."""
     return {
         "orchestrator": _orchestrator_address,
+        "payment_buyer": _buyer_agent.address if _buyer_agent else None,
         "vendors": [
-            {"name": vdef["name"], "address": va.address}
+            {"name": vdef["name"], "address": va.address, "role": "seller"}
             for vdef, va in zip(VENDOR_DEFS, _vendor_agents)
         ],
     }
+
+
+@app.get("/api/agents/registration")
+async def agent_registration() -> Dict[str, Any]:
+    """
+    Return addresses and endpoint URIs for Agent Inspector registration.
+    Use this when you can't see backend logs — open in browser or curl.
+    """
+    return {
+        "orchestrator": {
+            "address": _orchestrator_address,
+            "note": "Create a mailbox for this address in Agent Inspector.",
+        },
+        "vendors": [
+            {
+                "name": vdef["name"],
+                "address": va.address,
+                "endpoint_uri": f"http://127.0.0.1:{vdef['port']}",
+                "role": "payment seller",
+            }
+            for vdef, va in zip(VENDOR_DEFS, _vendor_agents)
+        ],
+    }
+
+
+# ─── Payment (FET) — thin wrappers; agents do the real work ────────────────
+
+
+def _get_seller_for_job(job: Dict[str, Any]) -> tuple[Any, str, str, str] | None:
+    """
+    Find the vendor agent (seller) for a job.
+    Returns (vendor_agent, address, wallet_address, vendor_name) or None.
+    """
+    vendor_id = int(job.get("vendor_id", 0) or 0)
+    if not vendor_id:
+        return None
+    for vdef, va in zip(VENDOR_DEFS, _vendor_agents):
+        if int(vdef.get("vendor_id", 0) or 0) == vendor_id:
+            return va, va.address, str(va.wallet.address()), str(vdef.get("name", "Vendor"))
+    return None
+
+
+class CommitPaymentRequest(BaseModel):
+    """Body for POST /api/jobs/:id/commit-payment."""
+    transaction_id: str
+    buyer_fet_wallet: str
+
+
+class RejectPaymentRequest(BaseModel):
+    """Body for POST /api/jobs/:id/reject-payment (optional)."""
+    reason: str | None = None
+
+
+@app.get("/api/jobs/{job_id}/payment-status")
+async def payment_status(job_id: int) -> Dict[str, Any]:
+    """
+    Unified payment state endpoint.
+    Returns buyer agent's state machine for this job: status, payment_request, events, error.
+    The frontend polls this instead of separate event/status endpoints.
+    """
+    return get_payment_state(job_id)
+
+
+@app.get("/api/jobs/{job_id}/payment-protocol-events")
+async def get_payment_protocol_events(job_id: int) -> Dict[str, Any]:
+    """Backward compat: return events from the buyer agent's state."""
+    state = get_payment_state(job_id)
+    return {"job_id": job_id, "events": state.get("events", [])}
+
+
+@app.post("/api/jobs/{job_id}/request-payment")
+async def request_payment(job_id: int) -> Dict[str, Any]:
+    """
+    Thin wrapper: tell the buyer agent to start payment for this job.
+    The buyer agent autonomously contacts the vendor (seller).
+    """
+    if _api_payer_identity is None or _local_resolver is None or _buyer_agent is None:
+        return {"error": "Payment system not ready"}
+    job = load_job(job_id)
+    if not job:
+        return {"error": f"Job {job_id} not found"}
+
+    seller = _get_seller_for_job(job)
+    if seller is None:
+        return {"error": "No vendor agent found for this job"}
+    _, seller_address, seller_wallet, seller_name = seller
+
+    description = f"AgentPlace job #{job_id} — {job.get('type', 'service')} (${job.get('price', 0)})"
+
+    # Send StartPayment to the buyer agent — it handles the rest autonomously
+    msg = StartPayment(
+        job_id=job_id,
+        seller_address=seller_address,
+        seller_wallet=seller_wallet,
+        seller_name=seller_name,
+        description=description,
+    )
+    try:
+        await send_message(
+            destination=_buyer_agent.address,
+            message=msg,
+            response_type=None,
+            sender=_api_payer_identity,
+            resolver=_local_resolver,
+            sync=False,
+            timeout=10,
+        )
+    except Exception as e:
+        log.warning("\033[35m[API]\033[0m request-payment → buyer agent failed: %s", e)
+        return {"error": f"Failed to reach buyer agent: {e}"}
+
+    log.info(
+        "\033[35m[API]\033[0m POST /api/jobs/%s/request-payment → StartPayment sent to buyer agent (seller=%s)",
+        job_id, seller_name,
+    )
+    return {"started": True, "job_id": job_id, "seller_name": seller_name}
+
+
+@app.post("/api/jobs/{job_id}/reject-payment")
+async def reject_payment(job_id: int, body: RejectPaymentRequest | None = Body(None)) -> Dict[str, Any]:
+    """
+    Thin wrapper: tell the buyer agent the customer declined.
+    The buyer agent sends RejectPayment to the vendor autonomously.
+    """
+    if _api_payer_identity is None or _local_resolver is None or _buyer_agent is None:
+        return {"success": False, "error": "Payment system not ready"}
+
+    reason = (body.reason if body else None) or "Customer declined payment"
+    msg = DeclinePayment(job_id=job_id, reason=reason)
+    try:
+        await send_message(
+            destination=_buyer_agent.address,
+            message=msg,
+            response_type=None,
+            sender=_api_payer_identity,
+            resolver=_local_resolver,
+            sync=False,
+            timeout=10,
+        )
+    except Exception as e:
+        log.warning("\033[35m[API]\033[0m reject-payment → buyer agent failed: %s", e)
+        return {"success": False, "error": str(e)}
+
+    log.info("\033[35m[API]\033[0m POST /api/jobs/%s/reject-payment → DeclinePayment sent to buyer agent", job_id)
+    return {"success": True, "submitted": True}
+
+
+@app.get("/api/payment-agent/status")
+async def payment_agent_status() -> Dict[str, Any]:
+    """Return whether vendor seller agents are ready (for UI)."""
+    testnet = os.getenv("FET_USE_TESTNET", "true").lower() == "true"
+    if not _vendor_agents:
+        return {"ready": False, "recipient_address": None, "fet_network": None}
+    return {
+        "ready": True,
+        "recipient_address": str(_vendor_agents[0].wallet.address()) if _vendor_agents else None,
+        "fet_network": "stable-testnet" if testnet else "mainnet",
+        "seller_count": len(_vendor_agents),
+    }
+
+
+@app.post("/api/jobs/{job_id}/commit-payment")
+async def commit_payment(job_id: int, body: CommitPaymentRequest) -> Dict[str, Any]:
+    """
+    Thin wrapper: tell the buyer agent to send CommitPayment to the seller.
+    The buyer agent sends the message and the vendor verifies on-chain.
+    Poll GET /payment-status to see when CompletePayment or CancelPayment arrives.
+    """
+    log.info(
+        "\033[35m[API]\033[0m POST /api/jobs/%s/commit-payment  tx=%s",
+        job_id, body.transaction_id[:16] + "…" if len(body.transaction_id) > 16 else body.transaction_id,
+    )
+    if _api_payer_identity is None or _local_resolver is None or _buyer_agent is None:
+        return {"success": False, "error": "Payment system not ready"}
+
+    msg = SubmitPaymentProof(
+        job_id=job_id,
+        transaction_id=body.transaction_id,
+        buyer_fet_wallet=body.buyer_fet_wallet,
+    )
+    try:
+        await send_message(
+            destination=_buyer_agent.address,
+            message=msg,
+            response_type=None,
+            sender=_api_payer_identity,
+            resolver=_local_resolver,
+            sync=False,
+            timeout=10,
+        )
+    except Exception as e:
+        log.warning("\033[35m[API]\033[0m commit-payment → buyer agent failed: %s", e)
+        return {"success": False, "error": f"Failed to reach buyer agent: {e}"}
+
+    log.info(
+        "\033[35m[API]\033[0m POST /api/jobs/%s/commit-payment → SubmitPaymentProof sent to buyer agent",
+        job_id,
+    )
+    return {"submitted": True, "job_id": job_id}
 
 
 # ─── Dynamic vendor registration ─────────────────────────────────────────
@@ -705,6 +979,23 @@ async def update_vendor_data(vendor_id: int, req: UpsertVendorDataRequest) -> Di
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.delete("/api/data/vendors/{vendor_id}")
+async def delete_vendor_data(vendor_id: int) -> Dict[str, Any]:
+    """Delete vendor row from Supabase and cleanup related jobs."""
+    try:
+        from db_helpers import delete_vendor as _delete_vendor
+
+        ok = _delete_vendor(vendor_id)
+        if not ok:
+            raise HTTPException(status_code=500, detail=f"Failed to delete vendor {vendor_id}")
+        return {"ok": True, "vendor_id": vendor_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("delete_vendor_data %s: %s", vendor_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/api/data/customers")
 async def upsert_customer_data(req: UpsertCustomerDataRequest) -> Dict[str, Any]:
     """Persist customer data to Supabase (service-key path)."""
@@ -723,6 +1014,23 @@ async def upsert_customer_data(req: UpsertCustomerDataRequest) -> Dict[str, Any]
         raise
     except Exception as exc:
         log.warning("upsert_customer_data: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.delete("/api/data/customers/{consumer_name}")
+async def delete_customer_data(consumer_name: str) -> Dict[str, Any]:
+    """Delete customer row from Supabase and cleanup related jobs."""
+    try:
+        from db_helpers import delete_customer as _delete_customer
+
+        ok = _delete_customer(consumer_name)
+        if not ok:
+            raise HTTPException(status_code=500, detail=f"Failed to delete customer {consumer_name}")
+        return {"ok": True, "consumer_name": consumer_name}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("delete_customer_data %s: %s", consumer_name, exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -751,6 +1059,21 @@ async def create_job(req: CreateJobRequest) -> Dict[str, Any]:
     except Exception as exc:
         log.warning("create_job: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: int) -> Dict[str, Any]:
+    """Delete a job from Supabase and cleanup vendor/customer references."""
+    try:
+        from db_helpers import delete_job as _delete_job
+
+        ok = _delete_job(job_id)
+        if not ok:
+            return {"ok": False, "error": "Delete failed"}
+        return {"ok": True, "job_id": job_id}
+    except Exception as exc:
+        log.warning("delete_job %s: %s", job_id, exc)
+        return {"ok": False, "error": str(exc)}
 
 
 @app.post("/api/vendors")
@@ -813,12 +1136,17 @@ async def register_vendor(req: CreateVendorRequest) -> Dict[str, Any]:
         pricing_strategy=req.pricing_strategy,
         weekly_availability=req.weekly_availability or {},
         vendor_id=vendor_id,
+        resolve=_local_resolver,
     )
 
     # Fix event-loop mismatch (same issue as persistent agents)
     running_loop = asyncio.get_running_loop()
     if va._loop is not running_loop:
         va._loop = running_loop
+
+    # Register with local resolver so buyer/API can reach this vendor seller
+    if _local_resolver is not None:
+        _local_resolver.register(va.address, f"http://127.0.0.1:{port}/submit")
 
     vdef = {
         "vendor_id": vendor_id,
@@ -994,6 +1322,48 @@ async def avg_price(query: str = "", service: str = "") -> Dict[str, Any]:
 @app.get("/api/health")
 async def health() -> Dict[str, str]:
     return {"status": "ok", "orchestrator": _orchestrator_address}
+
+
+class CreateJobRequest(BaseModel):
+    """Create a job in JobsData and attach to ConsumerData / VendorData."""
+    consumer_name: str
+    vendor_id: int = 0
+    job_type: str = "General"
+    price: int = 0
+    duration_minutes: int = 60
+    date: str | None = None
+    start_time: str = "09:00"
+    status: int = 5  # 5 = Booked
+
+
+@app.post("/api/jobs")
+async def create_job_api(req: CreateJobRequest) -> Dict[str, Any]:
+    """Create a job in Supabase JobsData and update ConsumerData/VendorData job_ids."""
+    log.info(
+        "\033[35m[API]\033[0m POST /api/jobs  consumer=%s  vendor_id=%s  type=%s  price=$%s",
+        req.consumer_name, req.vendor_id, req.job_type, req.price,
+    )
+    try:
+        from db_helpers import create_job as _create_job
+        row = _create_job(
+            vendor_id=req.vendor_id,
+            consumer_name=req.consumer_name.strip(),
+            job_type=req.job_type or "General",
+            price=req.price,
+            duration_minutes=req.duration_minutes,
+            date=req.date,
+            start_time=req.start_time,
+            status=req.status,
+        )
+        if row:
+            job_id = row.get("job_id")
+            log.info("\033[32m[API]\033[0m Job created: job_id=%s  consumer=%s", job_id, req.consumer_name)
+            return {"ok": True, "job_id": job_id, "job": row}
+        log.warning("\033[31m[API]\033[0m create_job returned None for consumer=%s", req.consumer_name)
+        return {"ok": False, "error": "Create job failed — check backend logs"}
+    except Exception as e:
+        log.error("\033[31m[API]\033[0m create_job exception: %s", e, exc_info=True)
+        return {"ok": False, "error": str(e)}
 
 
 class UpdateJobStatusRequest(BaseModel):

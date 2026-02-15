@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ArrowRight, Sparkles, Wrench, Calendar, Info } from 'lucide-react';
+import { ArrowRight, Sparkles, Wrench, Calendar, Info, Trash2 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -18,7 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { insertCustomer } from '@/lib/supabase-data';
+import { deleteCustomer, insertCustomer } from '@/lib/supabase-data';
 import { fetchAvgPrice } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -29,6 +29,27 @@ const SUGGESTIONS = [
   'Paint my living room walls — neutral tones',
 ];
 const SLOT_LABELS = ['8a', '9a', '10a', '11a', '12p', '1p', '2p', '3p', '4p', '5p', '6p', '7p'];
+const SLOT_TO_HHMM: Record<string, string> = {
+  '8a': '08:00',
+  '9a': '09:00',
+  '10a': '10:00',
+  '11a': '11:00',
+  '12p': '12:00',
+  '1p': '13:00',
+  '2p': '14:00',
+  '3p': '15:00',
+  '4p': '16:00',
+  '5p': '17:00',
+  '6p': '18:00',
+  '7p': '19:00',
+};
+
+function makeRequestToken(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 function nextWeekDays(): Date[] {
   const start = new Date();
@@ -44,20 +65,32 @@ function dateKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function formatAvailabilityForNotes(selected: Set<string>): string {
-  if (selected.size === 0) return 'No availability provided.';
+function buildAvailabilityWindows(selected: Set<string>) {
+  const rows = [...selected]
+    .map((key) => {
+      const [day, slot] = key.split('|');
+      const hhmm = SLOT_TO_HHMM[slot];
+      if (!day || !hhmm) return null;
+      const start = `${day}T${hhmm}:00`;
+      const [hh, mm] = hhmm.split(':').map((v) => Number(v));
+      const endDate = new Date(`${day}T${hhmm}:00`);
+      endDate.setHours(hh + 1, mm, 0, 0);
+      const end = `${day}T${String(endDate.getHours()).padStart(2, '0')}:${String(endDate.getMinutes()).padStart(2, '0')}:00`;
+      return { start_iso: start, end_iso: end };
+    })
+    .filter((v): v is { start_iso: string; end_iso: string } => v != null)
+    .sort((a, b) => a.start_iso.localeCompare(b.start_iso));
 
-  const grouped: Record<string, string[]> = {};
-  const sorted = [...selected].sort();
-  for (const key of sorted) {
-    const [day, slot] = key.split('|');
-    if (!grouped[day]) grouped[day] = [];
-    grouped[day].push(slot);
-  }
-
-  return Object.entries(grouped)
-    .map(([day, slots]) => `${day}: ${slots.join(', ')}`)
-    .join('\n');
+  const total = rows.length;
+  return rows.map((row, idx) => {
+    const bucket = Math.floor((idx / Math.max(1, total)) * 5);
+    const priority = Math.max(1, Math.min(5, 5 - bucket));
+    return {
+      ...row,
+      priority,
+      hard_constraint: true,
+    };
+  });
 }
 
 function inferServiceFromPrompt(prompt: string, fallback = ''): string {
@@ -72,6 +105,26 @@ function inferServiceFromPrompt(prompt: string, fallback = ''): string {
   return service;
 }
 
+function extractExplicitBudgetFromPrompt(prompt: string): number | null {
+  const text = String(prompt || '');
+
+  // Prefer explicit currency mentions such as "$50" or "$1,250".
+  const currency = text.match(/\$\s*([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)/);
+  if (currency?.[1]) {
+    const n = Number(currency[1].replace(/,/g, ''));
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+
+  // Fallback for phrases like "budget is 50" / "max 50".
+  const budgetPhrase = text.match(/\b(?:budget|max(?:imum)?|cap)\s*(?:is|of|at|=|:)?\s*\$?\s*([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)\b/i);
+  if (budgetPhrase?.[1]) {
+    const n = Number(budgetPhrase[1].replace(/,/g, ''));
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+
+  return null;
+}
+
 
 export function PromptPage() {
   const [prompt, setPrompt] = useState('');
@@ -81,15 +134,36 @@ export function PromptPage() {
   const [avgPrice, setAvgPrice] = useState<{ avg_price: number; job_count: number; matched_types: string[] } | null>(null);
   const [avgPriceLoading, setAvgPriceLoading] = useState(false);
   const [selectedAvailability, setSelectedAvailability] = useState<Set<string>>(new Set());
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const [customerOpen, setCustomerOpen] = useState(false);
+  const dragStateRef = useRef<{
+    startDayIndex: number | null;
+    startSlotIndex: number | null;
+    endDayIndex: number | null;
+    endSlotIndex: number | null;
+    mode: 'add' | 'remove';
+  }>({ startDayIndex: null, startSlotIndex: null, endDayIndex: null, endSlotIndex: null, mode: 'add' });
+  /** Faded preview box while dragging — { minDay, maxDay, minSlot, maxSlot } so we can render overlay */
+  const [dragPreview, setDragPreview] = useState<{ minDay: number; maxDay: number; minSlot: number; maxSlot: number } | null>(null);
   const [customerSearch, setCustomerSearch] = useState('');
   const [newCustomerName, setNewCustomerName] = useState('');
   const [creatingCustomer, setCreatingCustomer] = useState(false);
+  const [deletingCustomerName, setDeletingCustomerName] = useState<string | null>(null);
   const [customerError, setCustomerError] = useState('');
   const navigate = useNavigate();
   const location = useLocation();
   const promptSelectCustomer = (location.state as { promptSelectCustomer?: boolean } | null)?.promptSelectCustomer ?? false;
-  const { setLastPrompt, customers, selectedCustomer, setSelectedCustomer, refetchCustomers, dataError, setNegotiateParams } = useApp();
+  const {
+    setLastPrompt,
+    customers,
+    selectedCustomer,
+    setSelectedCustomer,
+    refetchCustomers,
+    refetchVendors,
+    refetchJobs,
+    dataError,
+    setNegotiateParams,
+  } = useApp();
   const weekDays = nextWeekDays();
 
   useEffect(() => {
@@ -139,16 +213,117 @@ export function PromptPage() {
     });
   };
 
+  const applyRange = useCallback(
+    (minDay: number, maxDay: number, minSlot: number, maxSlot: number, mode: 'add' | 'remove') => {
+      const days = nextWeekDays();
+      setSelectedAvailability((prev) => {
+        const next = new Set(prev);
+        for (let d = minDay; d <= maxDay; d++) {
+          for (let s = minSlot; s <= maxSlot; s++) {
+            const key = `${dateKey(days[d])}|${SLOT_LABELS[s]}`;
+            if (mode === 'add') next.add(key);
+            else next.delete(key);
+          }
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  const handleCalendarCellMouseDown = useCallback(
+    (dayIndex: number, slotIndex: number) => {
+      const day = weekDays[dayIndex];
+      const key = `${dateKey(day)}|${SLOT_LABELS[slotIndex]}`;
+      const isSelected = selectedAvailability.has(key);
+      const mode: 'add' | 'remove' = isSelected ? 'remove' : 'add';
+      dragStateRef.current = {
+        startDayIndex: dayIndex,
+        startSlotIndex: slotIndex,
+        endDayIndex: dayIndex,
+        endSlotIndex: slotIndex,
+        mode,
+      };
+      setDragPreview({ minDay: dayIndex, maxDay: dayIndex, minSlot: slotIndex, maxSlot: slotIndex });
+    },
+    [weekDays, selectedAvailability]
+  );
+
+  const handleCalendarCellMouseEnter = useCallback((dayIndex: number, slotIndex: number) => {
+    const state = dragStateRef.current;
+    if (state.startDayIndex === null) return;
+    state.endDayIndex = dayIndex;
+    state.endSlotIndex = slotIndex;
+    const minDay = Math.min(state.startDayIndex, dayIndex);
+    const maxDay = Math.max(state.startDayIndex, dayIndex);
+    const minSlot = Math.min(state.startSlotIndex ?? 0, slotIndex);
+    const maxSlot = Math.max(state.startSlotIndex ?? 0, slotIndex);
+    setDragPreview({ minDay, maxDay, minSlot, maxSlot });
+  }, []);
+
+  const handleCalendarMouseUp = useCallback(() => {
+    const state = dragStateRef.current;
+    if (state.startDayIndex === null) return;
+    const minDay = Math.min(state.startDayIndex, state.endDayIndex ?? state.startDayIndex);
+    const maxDay = Math.max(state.startDayIndex, state.endDayIndex ?? state.startDayIndex);
+    const minSlot = Math.min(state.startSlotIndex ?? 0, state.endSlotIndex ?? state.startSlotIndex ?? 0);
+    const maxSlot = Math.max(state.startSlotIndex ?? 0, state.endSlotIndex ?? state.startSlotIndex ?? 0);
+    applyRange(minDay, maxDay, minSlot, maxSlot, state.mode);
+    dragStateRef.current = { startDayIndex: null, startSlotIndex: null, endDayIndex: null, endSlotIndex: null, mode: 'add' };
+    setDragPreview(null);
+  }, [applyRange]);
+
+  useEffect(() => {
+    if (!calendarOpen) return;
+    window.addEventListener('mouseup', handleCalendarMouseUp);
+    return () => window.removeEventListener('mouseup', handleCalendarMouseUp);
+  }, [calendarOpen, handleCalendarMouseUp]);
+
+  /** For each (dayIndex, slotIndex) return position in a vertical run for merged bar styling */
+  const runPosition = useMemo(() => {
+    const map: Record<string, 'only' | 'first' | 'middle' | 'last'> = {};
+    weekDays.forEach((day, dayIndex) => {
+      const selectedSlots = SLOT_LABELS.map((slot, i) => (selectedAvailability.has(`${dateKey(day)}|${slot}`) ? i : -1)).filter((i) => i >= 0);
+      if (selectedSlots.length === 0) return;
+      selectedSlots.sort((a, b) => a - b);
+      const runs: number[][] = [];
+      let run: number[] = [selectedSlots[0]];
+      for (let i = 1; i < selectedSlots.length; i++) {
+        if (selectedSlots[i] === run[run.length - 1] + 1) run.push(selectedSlots[i]);
+        else {
+          runs.push(run);
+          run = [selectedSlots[i]];
+        }
+      }
+      runs.push(run);
+      runs.forEach((r) => {
+        r.forEach((slotIdx, pos) => {
+          const key = `${dayIndex}-${slotIdx}`;
+          if (r.length === 1) map[key] = 'only';
+          else if (pos === 0) map[key] = 'first';
+          else if (pos === r.length - 1) map[key] = 'last';
+          else map[key] = 'middle';
+        });
+      });
+    });
+    return map;
+  }, [weekDays, selectedAvailability]);
+
   const selectEntireDay = (day: Date) => {
     const dayPrefix = `${dateKey(day)}|`;
     setSelectedAvailability((prev) => {
       const next = new Set(prev);
-      const allDaySlots = SLOT_LABELS.map((slotLabel) => `${dayPrefix}${slotLabel}`);
-      const allSelected = allDaySlots.every((slot) => next.has(slot));
+      const allSelected = SLOT_LABELS.every((slotLabel) =>
+        next.has(`${dayPrefix}${slotLabel}`)
+      );
       if (allSelected) {
-        allDaySlots.forEach((slot) => next.delete(slot));
+        SLOT_LABELS.forEach((slotLabel) => {
+          next.delete(`${dayPrefix}${slotLabel}`);
+        });
       } else {
-        allDaySlots.forEach((slot) => next.add(slot));
+        SLOT_LABELS.forEach((slotLabel) => {
+          next.add(`${dayPrefix}${slotLabel}`);
+        });
       }
       return next;
     });
@@ -167,18 +342,45 @@ export function PromptPage() {
 
     const inferredService = inferServiceFromPrompt(trimmed, '');
     const service = inferredService || trimmed;
-    const budget = budgetStr ? parseInt(budgetStr, 10) : (avgPrice?.avg_price || 200);
+    const typedBudget = budgetStr ? Number.parseInt(budgetStr, 10) : Number.NaN;
+    const promptBudget = extractExplicitBudgetFromPrompt(trimmed);
+    const budget = Number.isFinite(typedBudget) && typedBudget > 0
+      ? typedBudget
+      : (promptBudget ?? avgPrice?.avg_price ?? 200);
+    const urgencyInt = parseInt(urgency, 10);
+
+    const slotsToUse =
+      selectedAvailability.size > 0
+        ? selectedAvailability
+        : new Set(
+            weekDays.flatMap((day) =>
+              SLOT_LABELS.map((slotLabel) => `${dateKey(day)}|${slotLabel}`)
+            )
+          );
+    const availabilityWindows = buildAvailabilityWindows(slotsToUse);
+    const latestAcceptable = availabilityWindows.length
+      ? availabilityWindows[availabilityWindows.length - 1].start_iso
+      : '';
+    const timezone =
+      Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const timePricePreference: 'time_first' | 'balanced' | 'price_first' =
+      urgencyInt >= 4 ? 'time_first' : urgencyInt <= 2 ? 'price_first' : 'balanced';
 
     setLastPrompt(trimmed);
-    const availabilityNote = formatAvailabilityForNotes(selectedAvailability);
 
     setNegotiateParams({
+      request_token: makeRequestToken(),
       service,
       budget,
-      urgency: parseInt(urgency, 10),
-      aggression: 3,
+      urgency: urgencyInt,
       city: trimmedCity,
-      notes: `${trimmed}\n\nCUSTOMER_AVAILABILITY_NEXT_7_DAYS:\n${availabilityNote}`,
+      timezone,
+      duration_minutes: 60,
+      availability_windows: availabilityWindows,
+      time_price_preference: timePricePreference,
+      latest_acceptable_start_iso: latestAcceptable,
+      notes: trimmed,
+      consumer_name: selectedCustomer?.consumer_name ?? '',
     });
 
     navigate('/customer/agents');
@@ -215,6 +417,22 @@ export function PromptPage() {
     } else {
       setCustomerError(result.error);
     }
+  };
+
+  const handleDeleteCustomer = async (name: string) => {
+    if (!window.confirm(`Delete customer "${name}" and all of their scheduled events?`)) return;
+    setCustomerError('');
+    setDeletingCustomerName(name);
+    const result = await deleteCustomer(name);
+    setDeletingCustomerName(null);
+    if ('error' in result) {
+      setCustomerError(result.error);
+      return;
+    }
+    if (selectedCustomer?.consumer_name === name) {
+      setSelectedCustomer(null);
+    }
+    await Promise.allSettled([refetchCustomers(), refetchVendors(), refetchJobs()]);
   };
 
   return (
@@ -403,66 +621,21 @@ export function PromptPage() {
             )}
 
             {urgency && (
-              <div className="space-y-2 rounded-xl border border-border/60 bg-card/40 p-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs font-medium text-foreground">Your availability for the next week</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    {selectedAvailability.size} slot{selectedAvailability.size === 1 ? '' : 's'} selected
-                  </p>
-                </div>
-                <p className="text-[11px] text-muted-foreground">
-                  Click cells to mark when you are free.
-                </p>
-                <div className="overflow-x-auto">
-                  <div className="min-w-[760px]">
-                    <div className="grid grid-cols-8 gap-1">
-                      <div className="h-9" />
-                      {weekDays.map((day) => (
-                        <button
-                          key={dateKey(day)}
-                          type="button"
-                          onClick={() => selectEntireDay(day)}
-                          className="h-9 rounded-md bg-muted/40 px-2 py-1 text-center transition-colors hover:bg-muted/70"
-                          aria-label={`Select all time slots on ${day.toDateString()}`}
-                        >
-                          <p className="text-[10px] text-muted-foreground">
-                            {day.toLocaleDateString('en-US', { weekday: 'short' })}
-                          </p>
-                          <p className="text-[11px] font-medium text-foreground">
-                            {day.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}
-                          </p>
-                        </button>
-                      ))}
-                      {SLOT_LABELS.map((slotLabel) => (
-                        <div key={`row-${slotLabel}`} className="contents">
-                          <div
-                            className="h-8 flex items-center justify-end pr-2 text-[10px] text-muted-foreground"
-                          >
-                            {slotLabel}
-                          </div>
-                          {weekDays.map((day) => {
-                            const key = `${dateKey(day)}|${slotLabel}`;
-                            const active = selectedAvailability.has(key);
-                            return (
-                              <button
-                                key={key}
-                                type="button"
-                                onClick={() => toggleAvailabilitySlot(day, slotLabel)}
-                                className={cn(
-                                  'h-8 rounded-sm border transition-colors',
-                                  active
-                                    ? 'border-primary/70 bg-primary/25 hover:bg-primary/30'
-                                    : 'border-border/60 bg-background hover:bg-muted/60'
-                                )}
-                                aria-label={`Toggle ${day.toDateString()} ${slotLabel}`}
-                              />
-                            );
-                          })}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-foreground">Your availability for the next week</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full justify-between gap-2"
+                  onClick={() => setCalendarOpen(true)}
+                >
+                  <span className="text-muted-foreground">
+                    {selectedAvailability.size === 0
+                      ? 'Click to select when you’re free'
+                      : `${selectedAvailability.size} slot${selectedAvailability.size === 1 ? '' : 's'} selected`}
+                  </span>
+                  <Calendar className="size-4 text-muted-foreground" />
+                </Button>
               </div>
             )}
 
@@ -512,6 +685,95 @@ export function PromptPage() {
         )}
       </main>
 
+      {/* Availability calendar popup — drag across cells to select */}
+      <Dialog open={calendarOpen} onOpenChange={setCalendarOpen}>
+        <DialogContent className="max-w-[90vw] sm:max-w-[800px] max-h-[90vh] overflow-auto">
+          <DialogHeader>
+            <DialogTitle>Your availability for the next week</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Click and drag to select a block (e.g. 8am–3pm Mon–Fri). Click a day header to select the whole day.
+          </p>
+          <div className="overflow-x-auto select-none rounded-lg border border-border/60 bg-card/40 p-3">
+            <div className="min-w-[720px] relative">
+              {/* Faded drag preview overlay */}
+              {dragPreview && (
+                <div
+                  className="absolute pointer-events-none rounded-md border-2 border-primary/50 bg-primary/20 z-10 transition-all duration-75"
+                  style={{
+                    left: `${((1 + dragPreview.minDay) / 8) * 100}%`,
+                    width: `${((dragPreview.maxDay - dragPreview.minDay + 1) / 8) * 100}%`,
+                    top: `${((1 + dragPreview.minSlot) / 13) * 100}%`,
+                    height: `${((dragPreview.maxSlot - dragPreview.minSlot + 1) / 13) * 100}%`,
+                  }}
+                  aria-hidden
+                />
+              )}
+              <div className="grid grid-cols-8 gap-x-1 gap-y-0">
+                <div className="h-9" />
+                {weekDays.map((day, dayIndex) => (
+                  <button
+                    key={dateKey(day)}
+                    type="button"
+                    onClick={() => selectEntireDay(day)}
+                    className="h-9 rounded-md bg-muted/40 px-2 py-1 text-center transition-colors hover:bg-muted/70"
+                    aria-label={`Select all time slots on ${day.toDateString()}`}
+                  >
+                    <p className="text-[10px] text-muted-foreground">
+                      {day.toLocaleDateString('en-US', { weekday: 'short' })}
+                    </p>
+                    <p className="text-[11px] font-medium text-foreground">
+                      {day.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}
+                    </p>
+                  </button>
+                ))}
+                {SLOT_LABELS.map((slotLabel, slotIndex) => (
+                  <div key={`row-${slotLabel}`} className="contents">
+                    <div className="h-7 flex items-center justify-end pr-2 text-[10px] text-muted-foreground">
+                      {slotLabel}
+                    </div>
+                    {weekDays.map((day, dayIndex) => {
+                      const key = `${dateKey(day)}|${slotLabel}`;
+                      const active = selectedAvailability.has(key);
+                      const run = runPosition[`${dayIndex}-${slotIndex}`];
+                      return (
+                        <div
+                          key={key}
+                          role="button"
+                          tabIndex={0}
+                          className={cn(
+                            'h-7 border-x border-border/60 transition-colors cursor-pointer',
+                            active
+                              ? 'bg-primary/25 border-primary/50 hover:bg-primary/30'
+                              : 'bg-background border-border/60 hover:bg-muted/60',
+                            active && run === 'only' && 'rounded-md border-y',
+                            active && run === 'first' && 'rounded-t-md border-t',
+                            active && run === 'last' && 'rounded-b-md border-b',
+                            active && run === 'middle' && 'border-t-0'
+                          )}
+                          aria-label={`${day.toDateString()} ${slotLabel}`}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            handleCalendarCellMouseDown(dayIndex, slotIndex);
+                          }}
+                          onMouseEnter={() => handleCalendarCellMouseEnter(dayIndex, slotIndex)}
+                          onClick={(e) => e.preventDefault()}
+                        />
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <Button type="button" onClick={() => setCalendarOpen(false)}>
+              Done
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Customer picker dialog */}
       <Dialog open={customerOpen} onOpenChange={setCustomerOpen}>
         <DialogContent className="sm:max-w-md">
@@ -543,25 +805,37 @@ export function PromptPage() {
             ) : sortedCustomers.length === 0 ? null : (
             <div className="max-h-[200px] overflow-auto space-y-1">
               {sortedCustomers.slice(0, 50).map((c) => (
-                <button
-                  key={c.consumer_name}
-                  type="button"
-                  onClick={() => {
-                    setSelectedCustomer(c);
-                    setCustomerOpen(false);
-                  }}
-                  className={cn(
-                    'w-full text-left px-3 py-2 rounded-lg text-sm transition-colors',
-                    selectedCustomer?.consumer_name === c.consumer_name
-                      ? 'bg-primary/15 text-primary font-medium'
-                      : 'hover:bg-muted'
-                  )}
-                >
-                  {c.consumer_name}
-                  {c.job_count > 0 && (
-                    <span className="text-muted-foreground ml-2">({c.job_count} jobs)</span>
-                  )}
-                </button>
+                <div key={c.consumer_name} className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedCustomer(c);
+                      setCustomerOpen(false);
+                    }}
+                    className={cn(
+                      'flex-1 text-left px-3 py-2 rounded-lg text-sm transition-colors',
+                      selectedCustomer?.consumer_name === c.consumer_name
+                        ? 'bg-primary/15 text-primary font-medium'
+                        : 'hover:bg-muted'
+                    )}
+                  >
+                    {c.consumer_name}
+                    {c.job_count > 0 && (
+                      <span className="text-muted-foreground ml-2">({c.job_count} jobs)</span>
+                    )}
+                  </button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-destructive hover:text-destructive"
+                    disabled={deletingCustomerName != null}
+                    onClick={() => handleDeleteCustomer(c.consumer_name)}
+                    aria-label={`Delete ${c.consumer_name}`}
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
               ))}
             </div>
             )}

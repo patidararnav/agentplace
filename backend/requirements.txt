@@ -8,3 +8,4 @@ uvicorn[standard]
 websockets
 supabase
 mcp[cli]
+cosmpy

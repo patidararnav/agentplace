@@ -26,7 +26,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { createJob, updateJobStatus } from '@/lib/supabase-data';
+import { createJob, fetchJobById, updateJobStatus } from '@/lib/supabase-data';
 
 function formatDate(s: string) {
   const d = new Date(s);
@@ -54,7 +54,7 @@ function parseStartTime(dateTime: string): string {
 
 export function JobResponsePage() {
   const navigate = useNavigate();
-  const { negotiationResults, selectedCustomer, negotiateParams } = useApp();
+  const { negotiationResults, selectedCustomer, negotiateParams, refetchCustomers, refetchVendors } = useApp();
   const [selectedChat, setSelectedChat] = useState<VendorQuote | null>(null);
   const [acceptedQuote, setAcceptedQuote] = useState<VendorQuote | null>(null);
   const [acceptingVendorId, setAcceptingVendorId] = useState<number | null>(null);
@@ -74,30 +74,44 @@ export function JobResponsePage() {
     setAcceptingVendorId(q.vendorId);
     try {
       let accepted = q;
+      let bookedExistingRow = false;
+      const jobPayload = {
+        vendor_id: q.vendorId,
+        vendor_name: q.name,
+        consumer_name: selectedCustomer.consumer_name,
+        job_type: negotiateParams?.service ?? 'general',
+        price: q.price,
+        duration_minutes: q.durationMinutes,
+        date: parseDate(q.dateTime),
+        start_time: parseStartTime(q.dateTime),
+        status: JOB_STATUS_BOOKED,
+      };
+
       if (q.job_id != null) {
         const statusResult = await updateJobStatus(q.job_id, JOB_STATUS_BOOKED);
-        if ('error' in statusResult) {
-          setAcceptError(statusResult.error);
-          return;
+        if (!('error' in statusResult)) {
+          const existing = await fetchJobById(q.job_id);
+          if (
+            existing &&
+            existing.vendor_id === q.vendorId &&
+            existing.consumer_name === selectedCustomer.consumer_name
+          ) {
+            accepted = { ...q, job_id: existing.job_id };
+            bookedExistingRow = true;
+          }
         }
-      } else {
-        const createResult = await createJob({
-          vendor_id: q.vendorId,
-          vendor_name: q.name,
-          consumer_name: selectedCustomer.consumer_name,
-          job_type: negotiateParams?.service ?? 'general',
-          price: q.price,
-          duration_minutes: q.durationMinutes,
-          date: parseDate(q.dateTime),
-          start_time: parseStartTime(q.dateTime),
-          status: JOB_STATUS_BOOKED,
-        });
+      }
+
+      if (!bookedExistingRow) {
+        const createResult = await createJob(jobPayload);
         if ('error' in createResult) {
           setAcceptError(createResult.error);
           return;
         }
         accepted = { ...q, job_id: createResult.data.job_id };
       }
+
+      await Promise.allSettled([refetchCustomers(), refetchVendors()]);
       setAcceptedQuote(accepted);
     } finally {
       setAcceptingVendorId(null);

@@ -9,12 +9,14 @@ Run standalone:  python customer.py   (reads config from .env)
 """
 
 import asyncio
+import json
+import math
 import os
 import random
 import re
-from urllib.parse import quote
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 from uuid import uuid4
 
 from uagents import Agent, Context, Protocol
@@ -33,25 +35,265 @@ from chat_utils import (
 )
 
 
-# ─── Counter-offer Logic (pure, importable) ──────────────────────────────
+# ─── Urgency-driven price policy helpers ─────────────────────────────────
+
+
+def _parse_iso_datetime(raw: str) -> Optional[datetime]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _urgency_norm(urgency: int) -> float:
+    return max(0.0, min(1.0, (int(urgency) - 1) / 4.0))
+
+
+def _days_ahead_from_iso(start_iso: str) -> float:
+    dt = _parse_iso_datetime(start_iso)
+    if dt is None:
+        return 0.0
+    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+    delta_days = (dt - now).total_seconds() / 86400.0
+    return max(0.0, min(7.0, delta_days))
+
+
+def target_price_for_days(
+    budget: int,
+    urgency: int,
+    days_ahead: float,
+) -> int:
+    """
+    Urgency-aware willingness-to-pay curve.
+
+    Higher urgency accepts higher near-term prices.
+    Lower urgency pushes harder for delayed slots.
+    """
+    b = max(1, int(budget))
+    u = _urgency_norm(urgency)
+    d = max(0.0, min(7.0, float(days_ahead)))
+
+    target_ratio_now = 0.70 + 0.30 * u
+    target_ratio_late = 0.50 + 0.40 * u
+    target_ratio = target_ratio_now + (target_ratio_late - target_ratio_now) * (d / 7.0)
+    return max(1, min(b, int(b * target_ratio)))
+
+
+def acceptance_price_cap(
+    budget: int,
+    urgency: int,
+    days_ahead: float,
+) -> int:
+    target = target_price_for_days(budget, urgency, days_ahead)
+    slack = 0.03 + 0.12 * _urgency_norm(urgency)
+    return min(max(1, int(budget)), int(target * (1.0 + slack)))
+
+
+def should_accept_vendor_offer(
+    *,
+    budget: int,
+    urgency: int,
+    vendor_price: int,
+    days_ahead: float,
+    round_no: int,
+    max_rounds: int,
+) -> bool:
+    """Decide whether to accept the current vendor offer."""
+    price = max(0, int(vendor_price))
+    hard_max = max(1, int(budget))
+    cap = acceptance_price_cap(hard_max, urgency, days_ahead)
+
+    # Good relative deal for this urgency/time profile.
+    if price <= cap:
+        return True
+
+    # Endgame rule: never reject a within-budget offer solely due urgency shaping.
+    if int(round_no) >= int(max_rounds) and price <= hard_max:
+        return True
+
+    return False
+
+
+def max_rounds_for_urgency(urgency: int) -> int:
+    # Negotiation round budget is fixed regardless of urgency.
+    _ = urgency
+    return 8
+
+
+def customer_offer_utility(
+    *,
+    budget: int,
+    urgency: int,
+    price: int,
+    start_iso: str,
+    time_price_preference: str,
+    priority: int = 1,
+) -> float:
+    b = max(1, int(budget))
+    p = max(0, int(price))
+    u = _urgency_norm(urgency)
+    d = _days_ahead_from_iso(start_iso)
+
+    price_score = max(-1.0, min(1.0, 1.0 - (p / float(b))))
+    horizon = max(3.0, 7.0 - 4.0 * u)
+    time_score = math.exp(-d / horizon)
+
+    # Low urgency: prioritize price heavily.
+    # High urgency: prioritize earlier appointment time.
+    w_time = 0.05 + 0.75 * u
+    w_price = 0.95 - 0.75 * u
+
+    pref = str(time_price_preference or "balanced").strip().lower()
+    if pref == "time_first":
+        w_time += 0.15
+    elif pref == "price_first":
+        w_price += 0.15
+
+    total = max(1e-6, w_time + w_price)
+    w_time /= total
+    w_price /= total
+
+    pr = max(1, min(5, int(priority or 1)))
+    priority_bonus = (pr - 1) * 0.02
+
+    return (w_price * price_score) + (w_time * time_score) + priority_bonus
 
 
 def customer_counter_price(
     budget: int,
-    aggression: int,
+    urgency: int,
     vendor_price: int,
     previous_counter: int,
+    days_ahead: float,
 ) -> int:
-    """Compute a counter-offer price given the vendor's latest price."""
-    pressure = {1: 0.03, 2: 0.06, 3: 0.1, 4: 0.13, 5: 0.16}[aggression]
-    target = int(budget * (1 - pressure))
-    midpoint = int((vendor_price + target) / 2)
-    proposal = min(budget, midpoint + random.randint(-2, 2))
-    floor = int(budget * 0.7)
+    """Compute a counter-offer from urgency and slot timing."""
+    target = target_price_for_days(budget, urgency, days_ahead)
+    midpoint = int((max(1, vendor_price) + target) / 2)
+    proposal = min(int(budget), midpoint + random.randint(-2, 2))
+    floor = int(max(1, budget) * 0.45)
     proposal = max(floor, proposal)
     if previous_counter > 0:
-        proposal = min(budget, max(proposal, previous_counter + random.randint(0, 2)))
+        proposal = min(int(budget), max(proposal, previous_counter))
     return proposal
+
+
+def choose_best_offer(
+    *,
+    offers: List[Dict[str, Any]],
+    budget: int,
+    urgency: int,
+    time_price_preference: str,
+) -> Dict[str, Any]:
+    if not offers:
+        return {}
+
+    def _offer_price(offer: Dict[str, Any]) -> int:
+        try:
+            return int(offer.get("price") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _offer_start(offer: Dict[str, Any]) -> str:
+        return str(offer.get("start_iso") or "")
+
+    def _offer_priority(offer: Dict[str, Any]) -> int:
+        try:
+            return int(offer.get("priority") or 1)
+        except (TypeError, ValueError):
+            return 1
+
+    # Low urgency customers compare multiple dates and favor cheaper later slots.
+    if int(urgency) <= 2:
+        return min(
+            offers,
+            key=lambda o: (
+                _offer_price(o),
+                -_days_ahead_from_iso(_offer_start(o)),
+                -_offer_priority(o),
+            ),
+        )
+
+    return max(
+        offers,
+        key=lambda o: customer_offer_utility(
+            budget=budget,
+            urgency=urgency,
+            price=_offer_price(o),
+            start_iso=_offer_start(o),
+            time_price_preference=time_price_preference,
+            priority=_offer_priority(o),
+        ),
+    )
+
+
+def _parse_vendor_offers(fields: Dict[str, str]) -> List[Dict[str, Any]]:
+    raw = fields.get("OFFERS_JSON", "")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [o for o in parsed if isinstance(o, dict)]
+        except Exception:
+            pass
+
+    # Fallback to a single-offer shape from flat fields.
+    price = int(fields.get("PRICE", "0")) if fields.get("PRICE", "").isdigit() else 0
+    start_iso = fields.get("START_ISO", "")
+    end_iso = fields.get("END_ISO", "")
+    if price > 0:
+        return [{
+            "offer_id": fields.get("OFFER_ID", "single"),
+            "price": price,
+            "start_iso": start_iso,
+            "end_iso": end_iso,
+            "priority": 1,
+        }]
+    return []
+
+
+_SENSITIVE_DISCLOSURE_PATTERNS = [
+    re.compile(
+        r"\b(max(?:imum)?\s+budget|budget\s+cap|budget\s+limit|absolute\s+maximum|reservation\s+price)\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(min(?:imum)?|lowest|floor|final)\s+(?:price|offer)\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\burgency\s*(?:is|=|:)?\s*[1-5](?:\s*/\s*5)?\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b[1-5]\s*/\s*5\b",
+        flags=re.IGNORECASE,
+    ),
+]
+
+
+def _slot_phrase(start_iso: str, end_iso: str) -> str:
+    start = str(start_iso or "").strip()
+    end = str(end_iso or "").strip()
+    if start and end:
+        return f"{start} to {end}"
+    if start:
+        return start
+    return "the proposed time slot"
+
+
+def _contains_sensitive_disclosure(text: str) -> bool:
+    t = str(text or "")
+    return any(p.search(t) for p in _SENSITIVE_DISCLOSURE_PATTERNS)
+
+
+def _sanitize_customer_utterance(text: str, fallback: str) -> str:
+    t = str(text or "").strip()
+    if not t or _contains_sensitive_disclosure(t) or "$" not in t:
+        return fallback
+    return t
 
 
 # ─── Agent Factory ───────────────────────────────────────────────────────
@@ -64,10 +306,14 @@ def create_customer_agent(
     service: str,
     budget: int,
     urgency: int = 3,
-    aggression: int = 3,
     city: str = "Palo Alto",
     notes: str = "",
     orchestrator_address: str,
+    timezone_name: str = "UTC",
+    duration_minutes: int = 60,
+    availability_windows: Optional[List[Dict[str, Any]]] = None,
+    time_price_preference: str = "balanced",
+    latest_acceptable_start_iso: str = "",
     port: Optional[int] = None,
     mailbox: bool = False,
     network: Optional[str] = None,
@@ -110,7 +356,6 @@ def create_customer_agent(
             "job_type": service,
             "max_price": str(budget),
             "urgency": str(urgency),
-            "aggression": str(aggression),
             "protocol": "chat",
         }
 
@@ -120,40 +365,78 @@ def create_customer_agent(
     agent = Agent(**kwargs)
 
     rid = str(uuid4())
-    counters: Dict[str, int] = {}
+    previous_counters: Dict[str, int] = {}
+    vendor_rounds: Dict[str, int] = {}
     deal_closed = False
     terminated = False
     expected_vendors: List[int] = [0]       # mutable; set from "Matched N vendors" status
     vendor_result_count: List[int] = [0]    # mutable; incremented on each vendor_result
 
+    req_windows = availability_windows or []
+    pref_token = str(time_price_preference or "balanced").strip().lower()
+    if pref_token not in {"time_first", "balanced", "price_first"}:
+        pref_token = "balanced"
+
     # ── LLM text generation ──
 
     sys_prompt = (
         f"You are a customer looking for {service} services. "
-        f"Your maximum budget is ${budget} and your urgency is {urgency}/5. "
-        f"Your negotiation style is {aggression}/5 (1 = very agreeable, 5 = very tough). "
+        f"Your preference is '{pref_token}' between time and price. "
         "Write brief, natural responses (1-3 sentences). You MUST mention the exact dollar "
-        "amount given to you. Do NOT include any KEY=VALUE lines — write like a real person."
+        "amount given to you. Keep reservation details private: never reveal maximum budget, "
+        "minimum/maximum acceptable price, urgency score, or negotiation limits. "
+        "Do NOT include any KEY=VALUE lines — write like a real person."
     )
 
-    async def _customer_text(counter_price: int, vendor_price: int) -> str:
-        if vendor_price <= budget:
-            return await generate_text(
-                sys_prompt,
-                f"The vendor quoted ${vendor_price} which is within your budget of ${budget}. "
-                "Accept the deal. Sound genuinely pleased.",
-                f"That works for me at ${vendor_price}. Let's close this.",
-            )
-        return await generate_text(
+    async def _accept_text(price: int, start_iso: str, end_iso: str) -> str:
+        when = _slot_phrase(start_iso, end_iso)
+        fallback = f"That works for me. I accept ${price} for {when}."
+        raw = await generate_text(
             sys_prompt,
-            f"The vendor quoted ${vendor_price} which is over your budget of ${budget}. "
-            f"You want to counter at ${counter_price}. Write a friendly but firm counter-offer.",
-            f"I appreciate the offer but could we do ${counter_price}?",
+            (
+                f"You are accepting an offer at ${price} for start time {when}. "
+                "Sound decisive and positive. Do not disclose hidden limits."
+            ),
+            fallback,
         )
+        return _sanitize_customer_utterance(raw, fallback)
+
+    async def _counter_text(
+        counter_price: int,
+        vendor_price: int,
+        start_iso: str,
+        end_iso: str,
+    ) -> str:
+        when = _slot_phrase(start_iso, end_iso)
+        fallback = f"Thanks for the offer. Could we do ${counter_price} for {when}?"
+        raw = await generate_text(
+            sys_prompt,
+            (
+                f"The vendor offered ${vendor_price} for {when}. "
+                f"Counter at ${counter_price} while staying polite and firm. "
+                "Do not disclose hidden limits."
+            ),
+            fallback,
+        )
+        return _sanitize_customer_utterance(raw, fallback)
+
+    async def _terminate_text(vendor_price: int, start_iso: str, end_iso: str) -> str:
+        when = _slot_phrase(start_iso, end_iso)
+        fallback = f"I appreciate it, but I can't make ${vendor_price} work for {when}. I'll pass."
+        raw = await generate_text(
+            sys_prompt,
+            (
+                f"The vendor is at ${vendor_price} for {when}, which does not work for you. "
+                "Politely end this negotiation. Do not disclose hidden limits."
+            ),
+            fallback,
+        )
+        return _sanitize_customer_utterance(raw, fallback)
 
     def _request_text() -> str:
         # Keep NOTES on a single line; parse_fields() is line-based.
         notes_urlenc = quote(notes or "", safe="")
+        windows_json = json.dumps(req_windows, separators=(",", ":"))
         return "\n".join([
             "TYPE=request",
             f"RID={rid}",
@@ -161,6 +444,11 @@ def create_customer_agent(
             f"BUDGET={budget}",
             f"URGENCY={urgency}",
             f"CITY={city}",
+            f"TIMEZONE={timezone_name}",
+            f"DURATION_MINUTES={max(1, int(duration_minutes))}",
+            f"TIME_PRICE_PREFERENCE={pref_token}",
+            f"LATEST_ACCEPTABLE_START_ISO={latest_acceptable_start_iso}",
+            f"AVAILABILITY_WINDOWS_JSON={windows_json}",
             f"NOTES_URLENC={notes_urlenc}",
             "TEXT=Please help me find the best vendor and negotiate in natural language.",
         ])
@@ -247,6 +535,13 @@ def create_customer_agent(
             price_s = fields.get("PRICE", "0")
             rounds_s = fields.get("ROUNDS", "0")
             vendor_id_s = fields.get("VENDOR_ID", "0")
+            start_iso = fields.get("START_ISO", "")
+            end_iso = fields.get("END_ISO", "")
+            utility_s = fields.get("UTILITY", "")
+            try:
+                utility_val = float(utility_s) if utility_s else 0.0
+            except ValueError:
+                utility_val = 0.0
             ctx.logger.info("VENDOR RESULT: %s  [%s]", vn, outcome)
             vr = {
                 "vendor_name": vn,
@@ -255,6 +550,9 @@ def create_customer_agent(
                 "outcome": outcome,
                 "price": int(price_s) if price_s.isdigit() else 0,
                 "rounds": int(rounds_s) if rounds_s.isdigit() else 0,
+                "start_iso": start_iso,
+                "end_iso": end_iso,
+                "utility": utility_val,
                 "text": fields.get("TEXT", text),
             }
             _append("vendor_results", vr)
@@ -264,14 +562,15 @@ def create_customer_agent(
             vendor_result_count[0] += 1
             ctx.logger.info(
                 "Vendor results: %d / %d expected",
-                vendor_result_count[0], expected_vendors[0],
+                vendor_result_count[0],
+                expected_vendors[0],
             )
             if expected_vendors[0] > 0 and vendor_result_count[0] >= expected_vendors[0]:
                 ctx.logger.info("All %d vendor results received — finishing", expected_vendors[0])
                 all_results = result_sink.get("vendor_results", []) if result_sink else []
                 deals = [r for r in all_results if r.get("outcome") == "deal"]
                 if deals:
-                    best = min(deals, key=lambda d: d.get("price", float("inf")))
+                    best = max(deals, key=lambda d: (float(d.get("utility") or 0.0), -(d.get("price", float("inf")))))
                     _record("outcome", "deal")
                     _record(
                         "outcome_text",
@@ -325,8 +624,8 @@ def create_customer_agent(
                 _finish()
             return
 
-        # ── vendor message → counter-offer ──
-        if mt != "vendor_message":
+        # ── vendor structured offer ──
+        if mt != "vendor_offer":
             return
         if deal_closed or terminated:
             return
@@ -335,42 +634,116 @@ def create_customer_agent(
         if not va:
             return
 
-        vp = int(fields["PRICE"]) if fields.get("PRICE", "").isdigit() else extract_price(text)
-        prev = counters.get(va, 0)
-        cp = customer_counter_price(budget, aggression, vp, prev)
-        if vp <= budget:
-            cp = vp
-        counters[va] = cp
-
-        # Push vendor message event
         vendor_text = fields.get("TEXT", text)
+        offers = _parse_vendor_offers(fields)
+        if not offers:
+            return
+
+        round_no = vendor_rounds.get(va, 0) + 1
+        vendor_rounds[va] = round_no
+
+        def _offer_price(offer: Dict[str, Any]) -> int:
+            try:
+                return int(offer.get("price") or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        def _offer_start(offer: Dict[str, Any]) -> str:
+            return str(offer.get("start_iso") or "")
+
+        def _offer_priority(offer: Dict[str, Any]) -> int:
+            try:
+                return int(offer.get("priority") or 1)
+            except (TypeError, ValueError):
+                return 1
+
+        best_offer = choose_best_offer(
+            offers=offers,
+            budget=budget,
+            urgency=urgency,
+            time_price_preference=pref_token,
+        )
+
+        vp = _offer_price(best_offer)
+        start_iso = _offer_start(best_offer)
+        end_iso = str(best_offer.get("end_iso") or "")
+        offer_id = str(best_offer.get("offer_id") or "")
+        priority = _offer_priority(best_offer)
+        util = customer_offer_utility(
+            budget=budget,
+            urgency=urgency,
+            price=vp,
+            start_iso=start_iso,
+            time_price_preference=pref_token,
+            priority=priority,
+        )
+
         _push_event({
             "type": "negotiation_msg",
             "role": "vendor-agent",
             "vendor_address": va,
-            "vendor_name": vendor_text.split(":")[0] if ":" in vendor_text else "Vendor",
+            "vendor_name": fields.get("VENDOR_NAME", "Vendor"),
             "price": vp,
             "text": vendor_text,
         })
 
-        body = await _customer_text(cp, vp)
+        days = _days_ahead_from_iso(start_iso)
+        max_rounds = max_rounds_for_urgency(urgency)
 
-        # Push customer counter event
+        action = "counter"
+        response_price = vp
+
+        if should_accept_vendor_offer(
+            budget=int(budget),
+            urgency=int(urgency),
+            vendor_price=vp,
+            days_ahead=days,
+            round_no=round_no,
+            max_rounds=max_rounds,
+        ):
+            action = "accept"
+        elif round_no >= max_rounds:
+            action = "terminate"
+        else:
+            prev = previous_counters.get(va, 0)
+            response_price = customer_counter_price(
+                budget=int(budget),
+                urgency=int(urgency),
+                vendor_price=vp,
+                previous_counter=prev,
+                days_ahead=days,
+            )
+            previous_counters[va] = response_price
+
+        if action == "accept":
+            body = await _accept_text(vp, start_iso, end_iso)
+            response_price = vp
+        elif action == "terminate":
+            body = await _terminate_text(vp, start_iso, end_iso)
+            response_price = 0
+        else:
+            body = await _counter_text(response_price, vp, start_iso, end_iso)
+
         _push_event({
             "type": "negotiation_msg",
             "role": "customer-agent",
             "vendor_address": va,
-            "price": cp,
+            "price": response_price,
             "text": body,
         })
 
         await ctx.send(
             orchestrator_address,
             make_chat_message("\n".join([
-                "TYPE=customer_message",
+                "TYPE=customer_counter",
                 f"RID={rid}",
                 f"VENDOR={va}",
-                f"PRICE={cp}",
+                f"ACTION={action}",
+                f"OFFER_ID={offer_id}",
+                f"PRICE={response_price}",
+                f"START_ISO={start_iso}",
+                f"END_ISO={end_iso}",
+                f"UTILITY={util:.6f}",
                 f"TEXT={body}",
             ])),
         )
@@ -396,6 +769,7 @@ if __name__ == "__main__":
     if _consumer_name:
         try:
             from db_helpers import load_consumer
+
             _consumer = load_consumer(_consumer_name)
             if _consumer:
                 print(f"[customer] Loaded consumer from Supabase: {_consumer_name}")
@@ -411,7 +785,6 @@ if __name__ == "__main__":
         service=os.getenv("JOB_TYPE", "leaky faucet").strip().lower(),
         budget=int(os.getenv("MAX_PRICE", "180")),
         urgency=max(1, min(5, int(os.getenv("URGENCY", "3")))),
-        aggression=max(1, min(5, int(os.getenv("CUSTOMER_AGGRESSION", "3")))),
         notes=os.getenv(
             "CUSTOMER_NOTES",
             "Need someone reliable and quick. Please include labor/materials in quote.",
@@ -420,6 +793,11 @@ if __name__ == "__main__":
             "ORCHESTRATOR_ADDRESS",
             "agent1q0sewr2pg82xzuqzvj98usjdtc9zyrdlrgpsqh0gp4uw4cvh3ujp7452dwu",
         ),
+        timezone_name=os.getenv("CUSTOMER_TIMEZONE", "UTC"),
+        duration_minutes=max(1, int(os.getenv("JOB_DURATION_MINUTES", "60"))),
+        availability_windows=[],
+        time_price_preference=os.getenv("TIME_PRICE_PREFERENCE", "balanced"),
+        latest_acceptable_start_iso=os.getenv("LATEST_ACCEPTABLE_START_ISO", ""),
         port=int(os.getenv("CUSTOMER_PORT", "8002")),
         mailbox=True,
         network="testnet",

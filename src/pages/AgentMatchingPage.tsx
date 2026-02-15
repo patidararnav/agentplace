@@ -8,7 +8,6 @@ import {
   MessageSquare,
   AlertCircle,
   ArrowRight,
-  Bot,
   Handshake,
   XCircle,
   Activity,
@@ -88,11 +87,11 @@ const WAR_STATUS_STYLE: Record<
   },
   no_availability: {
     label: 'No Availability',
-    color: '#a1a1aa',
-    border: 'rgba(148, 163, 184, 0.45)',
-    glow: 'rgba(148, 163, 184, 0.22)',
-    line: 'rgba(148, 163, 184, 0.58)',
-    badgeClass: 'text-zinc-300 bg-zinc-500/15 border-zinc-400/35',
+    color: '#94a3b8',
+    border: 'rgba(148, 163, 184, 0.6)',
+    glow: 'rgba(148, 163, 184, 0.25)',
+    line: 'rgba(148, 163, 184, 0.68)',
+    badgeClass: 'text-muted-foreground bg-zinc-500/15 border-zinc-400/35',
   },
 };
 
@@ -167,7 +166,7 @@ function buildQuotes(
       name: d.vendor_name,
       price: d.price,
       originalPrice: origPrice,
-      dateTime: preferredDateTime || new Date(Date.now() + (idx + 2) * 86400000).toISOString(),
+      dateTime: d.start_iso || preferredDateTime || new Date(Date.now() + (idx + 2) * 86400000).toISOString(),
       durationMinutes: 90,
       vendorId: d.vendor_id && d.vendor_id > 0 ? d.vendor_id : idx + 1,
       negotiationMessages: neg.messages,
@@ -382,7 +381,7 @@ export function AgentMatchingPage() {
     const el = logScrollRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    shouldAutoScrollRef.current = distanceFromBottom <= 80;
+    shouldAutoScrollRef.current = distanceFromBottom <= 24;
   }, []);
 
   const handleNodeCanvasWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
@@ -400,8 +399,13 @@ export function AgentMatchingPage() {
 
   useEffect(() => {
     const el = logScrollRef.current;
-    if (!el || !shouldAutoScrollRef.current) return;
-    el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (!shouldAutoScrollRef.current) return;
+    requestAnimationFrame(() => {
+      if (el) {
+        el.scrollTop = el.scrollHeight - el.clientHeight;
+      }
+    });
   }, [negotiation.logs.length]);
 
   useEffect(() => {
@@ -558,6 +562,10 @@ export function AgentMatchingPage() {
               <div className="rounded-xl border border-red-400/35 bg-red-500/10 backdrop-blur-sm px-3 py-2.5">
                 <p className="text-[10px] uppercase tracking-[0.14em] text-red-200/80">No Deal</p>
                 <p className="text-xl font-semibold text-red-100 mt-1">{metrics.noDeal}</p>
+              </div>
+              <div className="rounded-xl border border-zinc-400/35 bg-zinc-500/15 backdrop-blur-sm px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-[0.14em] text-zinc-200/80">No Availability</p>
+                <p className="text-xl font-semibold text-zinc-100 mt-1">{metrics.noAvailability}</p>
               </div>
             </div>
 

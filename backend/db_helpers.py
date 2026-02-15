@@ -19,6 +19,22 @@ from supabase_client import (
 
 logger = logging.getLogger(__name__)
 
+PRICING_STRATEGY_MAXIMIZE_JOBS = "maximize_jobs"
+PRICING_STRATEGY_HIGH_VALUE_ONLY = "high_value_only"
+PRICING_STRATEGY_YIELD_OPTIMIZER = "yield_optimizer"
+
+_PRICING_STRATEGY_CODE_TO_TOKEN = {
+    1: PRICING_STRATEGY_MAXIMIZE_JOBS,
+    2: PRICING_STRATEGY_HIGH_VALUE_ONLY,
+    3: PRICING_STRATEGY_YIELD_OPTIMIZER,
+}
+
+_PRICING_STRATEGY_TOKEN_TO_CODE = {
+    PRICING_STRATEGY_MAXIMIZE_JOBS: 1,
+    PRICING_STRATEGY_HIGH_VALUE_ONLY: 2,
+    PRICING_STRATEGY_YIELD_OPTIMIZER: 3,
+}
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  READ helpers
@@ -39,6 +55,19 @@ def load_vendor(vendor_id: int) -> Optional[Dict[str, Any]]:
         sb.table(TABLE_VENDOR)
         .select("*")
         .eq("vendor_id", vendor_id)
+        .maybe_single()
+        .execute()
+    )
+    return result.data
+
+
+def load_job(job_id: int) -> Optional[Dict[str, Any]]:
+    """Load a single job by job_id."""
+    sb = get_supabase()
+    result = (
+        sb.table(TABLE_JOBS)
+        .select("*")
+        .eq("job_id", job_id)
         .maybe_single()
         .execute()
     )
@@ -78,15 +107,10 @@ def vendor_row_to_agent_config(row: Dict[str, Any]) -> Dict[str, Any]:
 
     aggression = int(row.get("negotiation_aggression") or 2)
     aggression = max(1, min(5, aggression))
-    strategy = (
-        str(row.get("pricing_strategy") or "maximize_jobs")
-        .strip()
-        .lower()
-        .replace("-", "_")
-        .replace(" ", "_")
-    )
-    if strategy not in {"maximize_jobs", "high_value_only", "yield_optimizer"}:
-        strategy = "maximize_jobs"
+    raw_strategy = row.get("pricing_strategy")
+    if raw_strategy is None:
+        raw_strategy = row.get("strategy")
+    strategy = _normalize_pricing_strategy(raw_strategy)
 
     return {
         "vendor_id": int(row.get("vendor_id", 0)),
@@ -122,10 +146,32 @@ def load_consumer(consumer_name: str) -> Optional[Dict[str, Any]]:
 
 
 def _normalize_pricing_strategy(raw: Any) -> str:
-    token = str(raw or "maximize_jobs").strip().lower().replace("-", "_").replace(" ", "_")
-    if token not in {"maximize_jobs", "high_value_only", "yield_optimizer"}:
-        return "maximize_jobs"
+    if isinstance(raw, (int, float)):
+        return _PRICING_STRATEGY_CODE_TO_TOKEN.get(
+            int(raw), PRICING_STRATEGY_MAXIMIZE_JOBS
+        )
+
+    token = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if not token:
+        return PRICING_STRATEGY_MAXIMIZE_JOBS
+    if token.isdigit():
+        return _PRICING_STRATEGY_CODE_TO_TOKEN.get(
+            int(token), PRICING_STRATEGY_MAXIMIZE_JOBS
+        )
+    if token in {"maximize_number_of_jobs", "max_jobs"}:
+        return PRICING_STRATEGY_MAXIMIZE_JOBS
+    if token in {"high_value_jobs_only", "aggressive"}:
+        return PRICING_STRATEGY_HIGH_VALUE_ONLY
+    if token in {"yield_optimization"}:
+        return PRICING_STRATEGY_YIELD_OPTIMIZER
+    if token not in _PRICING_STRATEGY_TOKEN_TO_CODE:
+        return PRICING_STRATEGY_MAXIMIZE_JOBS
     return token
+
+
+def _pricing_strategy_code(raw: Any) -> int:
+    token = _normalize_pricing_strategy(raw)
+    return _PRICING_STRATEGY_TOKEN_TO_CODE.get(token, 1)
 
 
 def _is_missing_column_error(exc: Exception, column: str) -> bool:
@@ -199,6 +245,12 @@ def create_or_update_vendor(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]
     if not isinstance(home_location, dict):
         home_location = {"lat": 0, "lng": 0}
 
+    raw_strategy = payload.get("pricing_strategy")
+    if raw_strategy is None:
+        raw_strategy = payload.get("strategy")
+    strategy_token = _normalize_pricing_strategy(raw_strategy)
+    strategy_code = _pricing_strategy_code(raw_strategy)
+
     row: Dict[str, Any] = {
         "vendor_id": vendor_id,
         "name": name,
@@ -210,7 +262,8 @@ def create_or_update_vendor(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]
         },
         "experience_years": int(payload.get("experience_years") or 0),
         "negotiation_aggression": max(1, min(5, int(payload.get("negotiation_aggression") or 1))),
-        "pricing_strategy": _normalize_pricing_strategy(payload.get("pricing_strategy")),
+        "pricing_strategy": strategy_token,
+        "strategy": strategy_code,
         "job_types": _normalize_job_types(payload.get("job_types")),
         "job_ids": _to_int_list(payload.get("job_ids")),
         "reviews": [str(r) for r in (payload.get("reviews") or []) if str(r).strip()],
@@ -236,9 +289,10 @@ def create_or_update_vendor(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]
     is_update = bool(existing.data)
     update_row = {k: v for k, v in row.items() if k != "vendor_id"}
 
-    def _write(with_strategy: bool) -> Dict[str, Any]:
-        insert_row = row if with_strategy else {k: v for k, v in row.items() if k != "pricing_strategy"}
-        patch_row = update_row if with_strategy else {k: v for k, v in update_row.items() if k != "pricing_strategy"}
+    insert_row = dict(row)
+    patch_row = dict(update_row)
+
+    def _write() -> Dict[str, Any]:
         if is_update:
             result = (
                 sb.table(TABLE_VENDOR)
@@ -252,21 +306,30 @@ def create_or_update_vendor(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]
             result = sb.table(TABLE_VENDOR).insert(insert_row).select("*").single().execute()
         return result.data if result.data else row
 
-    try:
-        return _write(with_strategy=True)
-    except Exception as exc:
-        if not _is_missing_column_error(exc, "pricing_strategy"):
+    for _ in range(3):
+        try:
+            return _write()
+        except Exception as exc:
+            if _is_missing_column_error(exc, "pricing_strategy"):
+                logger.warning(
+                    "Vendor table missing pricing_strategy column; retrying without it for vendor_id=%s",
+                    vendor_id,
+                )
+                insert_row.pop("pricing_strategy", None)
+                patch_row.pop("pricing_strategy", None)
+                continue
+            if _is_missing_column_error(exc, "strategy"):
+                logger.warning(
+                    "Vendor table missing strategy column; retrying without it for vendor_id=%s",
+                    vendor_id,
+                )
+                insert_row.pop("strategy", None)
+                patch_row.pop("strategy", None)
+                continue
             logger.error("Failed to upsert vendor %s: %s", vendor_id, exc)
             return None
-        try:
-            logger.warning(
-                "Vendor table missing pricing_strategy column; retrying without it for vendor_id=%s",
-                vendor_id,
-            )
-            return _write(with_strategy=False)
-        except Exception as fallback_exc:
-            logger.error("Failed to upsert vendor %s: %s", vendor_id, fallback_exc)
-            return None
+    logger.error("Failed to upsert vendor %s: unsupported table schema", vendor_id)
+    return None
 
 
 def create_or_get_consumer(
@@ -515,6 +578,151 @@ def update_job_status(job_id: int, status: int) -> bool:
         return True
     except Exception as exc:
         logger.error("Failed to update job %d status: %s", job_id, exc)
+        return False
+
+
+def _remove_job_ids_from_vendor(vendor_id: int, remove_ids: set[int]) -> None:
+    if vendor_id <= 0 or not remove_ids:
+        return
+    sb = get_supabase()
+    try:
+        row = (
+            sb.table(TABLE_VENDOR)
+            .select("job_ids")
+            .eq("vendor_id", vendor_id)
+            .maybe_single()
+            .execute()
+        )
+        if not row.data:
+            return
+        current = _to_int_list(row.data.get("job_ids"))
+        next_ids = [jid for jid in current if jid not in remove_ids]
+        sb.table(TABLE_VENDOR).update({"job_ids": next_ids}).eq("vendor_id", vendor_id).execute()
+    except Exception as exc:
+        logger.warning("Failed to unlink jobs from vendor %s: %s", vendor_id, exc)
+
+
+def _remove_job_ids_from_consumer(consumer_name: str, remove_ids: set[int]) -> None:
+    cleaned = str(consumer_name or "").strip()
+    if not cleaned or not remove_ids:
+        return
+    sb = get_supabase()
+    try:
+        row = (
+            sb.table(TABLE_CONSUMER)
+            .select("job_ids, job_count")
+            .eq("consumer_name", cleaned)
+            .maybe_single()
+            .execute()
+        )
+        if not row.data:
+            return
+        current = _to_int_list(row.data.get("job_ids"))
+        next_ids = [jid for jid in current if jid not in remove_ids]
+        sb.table(TABLE_CONSUMER).update(
+            {"job_ids": next_ids, "job_count": len(next_ids)}
+        ).eq("consumer_name", cleaned).execute()
+    except Exception as exc:
+        logger.warning("Failed to unlink jobs from consumer %s: %s", cleaned, exc)
+
+
+def delete_job(job_id: int) -> bool:
+    """Delete one job and unlink it from vendor + consumer job_ids arrays."""
+    sb = get_supabase()
+    try:
+        existing = (
+            sb.table(TABLE_JOBS)
+            .select("job_id, vendor_id, consumer_name")
+            .eq("job_id", job_id)
+            .maybe_single()
+            .execute()
+        )
+        row = existing.data or {}
+
+        sb.table(TABLE_JOBS).delete().eq("job_id", job_id).execute()
+
+        if row:
+            remove_ids = {int(row.get("job_id") or job_id)}
+            _remove_job_ids_from_vendor(int(row.get("vendor_id") or 0), remove_ids)
+            _remove_job_ids_from_consumer(str(row.get("consumer_name") or ""), remove_ids)
+        return True
+    except Exception as exc:
+        logger.error("Failed to delete job %d: %s", job_id, exc)
+        return False
+
+
+def delete_customer(consumer_name: str) -> bool:
+    """Delete a consumer and all of their jobs, cleaning vendor references."""
+    cleaned = str(consumer_name or "").strip()
+    if not cleaned:
+        return False
+    sb = get_supabase()
+    try:
+        jobs_result = (
+            sb.table(TABLE_JOBS)
+            .select("job_id, vendor_id")
+            .eq("consumer_name", cleaned)
+            .execute()
+        )
+        jobs = jobs_result.data or []
+        remove_ids: set[int] = set()
+        vendor_ids: set[int] = set()
+        for row in jobs:
+            try:
+                remove_ids.add(int(row.get("job_id")))
+            except (TypeError, ValueError):
+                pass
+            try:
+                vid = int(row.get("vendor_id") or 0)
+                if vid > 0:
+                    vendor_ids.add(vid)
+            except (TypeError, ValueError):
+                pass
+
+        sb.table(TABLE_JOBS).delete().eq("consumer_name", cleaned).execute()
+        for vendor_id in vendor_ids:
+            _remove_job_ids_from_vendor(vendor_id, remove_ids)
+
+        sb.table(TABLE_CONSUMER).delete().eq("consumer_name", cleaned).execute()
+        return True
+    except Exception as exc:
+        logger.error("Failed to delete consumer %s: %s", cleaned, exc)
+        return False
+
+
+def delete_vendor(vendor_id: int) -> bool:
+    """Delete a vendor and all of their jobs, cleaning consumer references."""
+    vendor_id = int(vendor_id or 0)
+    if vendor_id <= 0:
+        return False
+    sb = get_supabase()
+    try:
+        jobs_result = (
+            sb.table(TABLE_JOBS)
+            .select("job_id, consumer_name")
+            .eq("vendor_id", vendor_id)
+            .execute()
+        )
+        jobs = jobs_result.data or []
+        remove_ids: set[int] = set()
+        consumer_names: set[str] = set()
+        for row in jobs:
+            try:
+                remove_ids.add(int(row.get("job_id")))
+            except (TypeError, ValueError):
+                pass
+            name = str(row.get("consumer_name") or "").strip()
+            if name:
+                consumer_names.add(name)
+
+        sb.table(TABLE_JOBS).delete().eq("vendor_id", vendor_id).execute()
+        for consumer_name in consumer_names:
+            _remove_job_ids_from_consumer(consumer_name, remove_ids)
+
+        sb.table(TABLE_VENDOR).delete().eq("vendor_id", vendor_id).execute()
+        return True
+    except Exception as exc:
+        logger.error("Failed to delete vendor %d: %s", vendor_id, exc)
         return False
 
 

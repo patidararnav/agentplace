@@ -7,7 +7,7 @@ import {
 } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
-import { Calendar, Clock, DollarSign, Wrench, User, ListOrdered, ExternalLink } from 'lucide-react';
+import { Calendar, Clock, DollarSign, Wrench, User, ListOrdered, ExternalLink, Trash2 } from 'lucide-react';
 
 const JOB_STATUS_LABELS: Record<JobStatus, string> = {
   1: 'Concierge',
@@ -26,6 +26,8 @@ interface JobDetailModalProps {
   onClose: () => void;
   /** When provided, shows a "Track job" button that opens the fulfillment/tracking screen for this job. */
   onTrackJob?: (job: PlannedJob) => void;
+  /** When provided, shows a "Delete event" button for calendar cleanup. */
+  onDeleteJob?: (job: PlannedJob) => void;
 }
 
 function formatDate(s: string) {
@@ -39,7 +41,7 @@ function formatDate(s: string) {
   });
 }
 
-export function JobDetailModal({ job, onClose, onTrackJob }: JobDetailModalProps) {
+export function JobDetailModal({ job, onClose, onTrackJob, onDeleteJob }: JobDetailModalProps) {
   return (
     <Dialog open onOpenChange={onClose}>
       <DialogContent className="sm:max-w-md bg-card border-border p-0">
@@ -90,6 +92,23 @@ export function JobDetailModal({ job, onClose, onTrackJob }: JobDetailModalProps
               >
                 <ExternalLink className="size-4" />
                 Track job &amp; update status
+              </Button>
+            </>
+          )}
+
+          {onDeleteJob && (
+            <>
+              <Separator className="bg-border/50" />
+              <Button
+                className="w-full gap-2"
+                variant="destructive"
+                onClick={() => {
+                  onDeleteJob(job);
+                  onClose();
+                }}
+              >
+                <Trash2 className="size-4" />
+                Delete event
               </Button>
             </>
           )}
