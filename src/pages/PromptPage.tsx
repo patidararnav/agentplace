@@ -6,6 +6,13 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -20,6 +27,37 @@ const SUGGESTIONS = [
   'Install a ceiling fan in the bedroom',
   'Paint my living room walls — neutral tones',
 ];
+const SLOT_LABELS = ['8a', '9a', '10a', '11a', '12p', '1p', '2p', '3p', '4p', '5p', '6p', '7p'];
+
+function nextWeekDays(): Date[] {
+  const start = new Date();
+  start.setHours(12, 0, 0, 0);
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    return d;
+  });
+}
+
+function dateKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function formatAvailabilityForNotes(selected: Set<string>): string {
+  if (selected.size === 0) return 'No availability provided.';
+
+  const grouped: Record<string, string[]> = {};
+  const sorted = [...selected].sort();
+  for (const key of sorted) {
+    const [day, slot] = key.split('|');
+    if (!grouped[day]) grouped[day] = [];
+    grouped[day].push(slot);
+  }
+
+  return Object.entries(grouped)
+    .map(([day, slots]) => `${day}: ${slots.join(', ')}`)
+    .join('\n');
+}
 
 function inferServiceFromPrompt(prompt: string): string {
   const lower = prompt.toLowerCase();
@@ -57,6 +95,8 @@ function extractMaxBudget(prompt: string): number | null {
 
 export function PromptPage() {
   const [prompt, setPrompt] = useState('');
+  const [urgency, setUrgency] = useState('');
+  const [selectedAvailability, setSelectedAvailability] = useState<Set<string>>(new Set());
   const [customerOpen, setCustomerOpen] = useState(false);
   const [customerSearch, setCustomerSearch] = useState('');
   const [newCustomerName, setNewCustomerName] = useState('');
@@ -67,10 +107,22 @@ export function PromptPage() {
   const promptSelectCustomer = (location.state as { promptSelectCustomer?: boolean } | null)?.promptSelectCustomer ?? false;
   const { setLastPrompt, customers, selectedCustomer, setSelectedCustomer, refetchCustomers, dataError, setNegotiateParams } = useApp();
   const [budgetWarningOpen, setBudgetWarningOpen] = useState(false);
+  const weekDays = nextWeekDays();
+
+  const toggleAvailabilitySlot = (day: Date, slotLabel: string) => {
+    const key = `${dateKey(day)}|${slotLabel}`;
+    setSelectedAvailability((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   const handleSubmit = (allowAutoBudget = false) => {
     const trimmed = prompt.trim();
     if (!trimmed) return;
+    if (!urgency) return;
 
     const service = inferServiceFromPrompt(trimmed);
     const parsedBudget = extractMaxBudget(trimmed);
@@ -83,13 +135,14 @@ export function PromptPage() {
     const budget = parsedBudget ?? 200;
     setLastPrompt(trimmed);
     setBudgetWarningOpen(false);
+    const availabilityNote = formatAvailabilityForNotes(selectedAvailability);
 
     setNegotiateParams({
       service,
       budget,
-      urgency: 3,
+      urgency: parseInt(urgency, 10),
       aggression: 3,
-      notes: trimmed,
+      notes: `${trimmed}\n\nCUSTOMER_AVAILABILITY_NEXT_7_DAYS:\n${availabilityNote}`,
     });
 
     navigate('/customer/agents');
@@ -215,6 +268,83 @@ export function PromptPage() {
               autoFocus
             />
 
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">How urgent is this job?</p>
+              <Select value={urgency} onValueChange={setUrgency}>
+                <SelectTrigger className="bg-card">
+                  <SelectValue placeholder="Select urgency" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">1 - Low (flexible timing)</SelectItem>
+                  <SelectItem value="2">2 - Soon (within a week)</SelectItem>
+                  <SelectItem value="3">3 - Medium (next few days)</SelectItem>
+                  <SelectItem value="4">4 - High (as soon as possible)</SelectItem>
+                  <SelectItem value="5">5 - Emergency (today)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {urgency && (
+              <div className="space-y-2 rounded-xl border border-border/60 bg-card/40 p-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium text-foreground">Your availability for the next week</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {selectedAvailability.size} slot{selectedAvailability.size === 1 ? '' : 's'} selected
+                  </p>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Click cells to mark when you are free.
+                </p>
+                <div className="overflow-x-auto">
+                  <div className="min-w-[760px]">
+                    <div className="grid grid-cols-8 gap-1">
+                      <div className="h-9" />
+                      {weekDays.map((day) => (
+                        <div
+                          key={dateKey(day)}
+                          className="h-9 rounded-md bg-muted/40 px-2 py-1 text-center"
+                        >
+                          <p className="text-[10px] text-muted-foreground">
+                            {day.toLocaleDateString('en-US', { weekday: 'short' })}
+                          </p>
+                          <p className="text-[11px] font-medium text-foreground">
+                            {day.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}
+                          </p>
+                        </div>
+                      ))}
+                      {SLOT_LABELS.map((slotLabel) => (
+                        <div key={`row-${slotLabel}`} className="contents">
+                          <div
+                            className="h-8 flex items-center justify-end pr-2 text-[10px] text-muted-foreground"
+                          >
+                            {slotLabel}
+                          </div>
+                          {weekDays.map((day) => {
+                            const key = `${dateKey(day)}|${slotLabel}`;
+                            const active = selectedAvailability.has(key);
+                            return (
+                              <button
+                                key={key}
+                                type="button"
+                                onClick={() => toggleAvailabilitySlot(day, slotLabel)}
+                                className={cn(
+                                  'h-8 rounded-sm border transition-colors',
+                                  active
+                                    ? 'border-primary/70 bg-primary/25 hover:bg-primary/30'
+                                    : 'border-border/60 bg-background hover:bg-muted/60'
+                                )}
+                                aria-label={`Toggle ${day.toDateString()} ${slotLabel}`}
+                              />
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="relative -mx-6 overflow-hidden">
               <style>{`
                 @keyframes marquee {
@@ -249,7 +379,7 @@ export function PromptPage() {
 
             <Button
               onClick={() => handleSubmit()}
-              disabled={!prompt.trim()}
+              disabled={!prompt.trim() || !urgency}
               size="lg"
               className="w-full rounded-xl text-base font-medium gap-2"
             >
