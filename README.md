@@ -79,6 +79,7 @@ Browser (React + Vite)
 | Agent | Mailbox | Endpoint | Setup |
 |-------|---------|----------|-------|
 | **Orchestrator** | `mailbox=True` (Agentverse) | Mailbox | One-time manual setup via [Agent Inspector](https://agentverse.ai/inspect) |
+| **Payment agent** | `mailbox=True` (Agentverse) | `http://127.0.0.1:8300` (or your server URL) | Register address + endpoint in [Agent Inspector](https://agentverse.ai/inspect) |
 | **Vendor agents** | `mailbox=False` | `http://127.0.0.1:<port>/submit` | Automatic — no manual setup |
 | **Customer agents** | `mailbox=False` | `http://127.0.0.1:<port>/submit` | Automatic — ephemeral, created per request |
 
@@ -142,14 +143,22 @@ If you see `SSL: CERTIFICATE_VERIFY_FAILED` errors, run this before starting the
 export SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")
 ```
 
-### 4. Set up the Orchestrator mailbox (one-time)
+### 4. Set up Agentverse (one-time)
 
-The orchestrator is the only agent that needs manual Agentverse mailbox setup:
+Two agents use Agentverse and need manual registration in [Agent Inspector](https://agentverse.ai/inspect):
+
+**Orchestrator**
 
 1. Start the backend once (step 5 below).
-2. Copy the orchestrator's address from the terminal logs.
-3. Go to the [Agent Inspector](https://agentverse.ai/inspect) and create a mailbox for that address.
+2. Copy the orchestrator's address from the terminal logs (e.g. `Orchestrator … address=agent1q...`).
+3. In Agent Inspector, create a mailbox for that address.
 4. Restart the backend. You should see `Successfully registered as mailbox agent in Agentverse`.
+
+**Payment agent** (for FET on-chain payment verification)
+
+1. After the backend has started, copy the payment agent's address from the logs (e.g. `Payment agent … address=agent1q...`).
+2. In Agent Inspector, add the payment agent with that **address** and **endpoint URI** `http://127.0.0.1:8300` (or your server's public URL and port in production).
+3. Demo payers need testnet FET; use the [Fetch.ai Testnet Faucet](https://companion.sandbox-london-b.fetch-ai.com/dorado-1/agents#Agents) if needed.
 
 ### 5. Start the backend
 
@@ -169,6 +178,8 @@ You'll see color-coded terminal output:
 [vendor]  PremiumPipes  address=agent1qga0...   port=8103
 ━━━ 4 persistent agents launched (orchestrator + 3 vendors) ━━━
 ```
+
+**After the backend is up:** see [backend/SETUP_AFTER_STARTUP.md](backend/SETUP_AFTER_STARTUP.md) to register the payment agent in Agent Inspector and add at least one vendor via `POST /api/vendors` (or run `./backend/scripts/add_sample_vendor.sh`).
 
 ### 6. Start the frontend
 
@@ -323,11 +334,14 @@ Create `backend/.env` from `backend/.env.example`. Key variables:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `AGENTVERSE_KEY` | Yes | Agentverse API key for orchestrator mailbox |
+| `AGENTVERSE_KEY` | Yes | Agentverse API key for orchestrator + payment agent mailbox |
 | `ASI1_API_KEY` | Yes | ASI:One API key for LLM negotiation + convergence |
 | `ORCHESTRATOR_SEED` | No | Deterministic seed for orchestrator identity (default provided) |
 | `ORCHESTRATOR_PORT` | No | Port for orchestrator local server (default: `8001`) |
 | `MAX_NEGOTIATION_ROUNDS` | No | Max rounds before force-closing (default: `8`) |
+| `PAYMENT_AGENT_SEED` | No | Seed for payment agent (default in .env.example) |
+| `PAYMENT_AGENT_PORT` | No | Payment agent port (default: `8300`) |
+| `FET_USE_TESTNET` | No | Use Fetch.ai testnet for payments (default: `true`) |
 
 Vendor agents are configured in `server.py`'s `VENDOR_DEFS` array, or created dynamically via `POST /api/vendors`.
 
