@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
+import { WeeklyAvailabilityCalendar } from "@/components/WeeklyAvailabilityCalendar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,18 +9,15 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { updateVendor } from "@/lib/supabase-data";
 import { geocodeAddress, reverseGeocode } from "@/lib/geocode";
+import { createWeeklyAvailability, normalizeWeeklyAvailability, type WeeklyAvailability } from "@/lib/weekly-availability";
 import { useApp } from "@/context/AppContext";
 
-const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
-
-const defaultWeekly: Record<string, string[] | null> = Object.fromEntries(
-  DAYS.map((d) => [d, ["09:00", "17:00"]])
-);
+const defaultWeekly = createWeeklyAvailability();
 
 type JobTypeRow = { type: string; price: string; duration_minutes: string };
 
 function vendorToFormState(v: { name: string; max_distance_miles: number; home_location: { lat: number; lng: number }; experience_years: number; negotiation_aggression: number; pricing_strategy?: string; weekly_availability: Record<string, string[] | null>; job_types: { type: string; price: number; duration_minutes: number }[] }) {
-  const weekly = { ...defaultWeekly, ...(v.weekly_availability || {}) };
+  const weekly = normalizeWeeklyAvailability(v.weekly_availability || {});
   const pricingStrategy: "maximize_jobs" | "high_value_only" | "yield_optimizer" =
     v.pricing_strategy === "high_value_only" || v.pricing_strategy === "yield_optimizer"
       ? v.pricing_strategy
@@ -53,7 +51,7 @@ export function EditVendorPage() {
   const [experienceYears, setExperienceYears] = useState("5");
   const [negotiationAggression, setNegotiationAggression] = useState("1");
   const [pricingStrategy, setPricingStrategy] = useState<"maximize_jobs" | "high_value_only" | "yield_optimizer">("maximize_jobs");
-  const [weekly, setWeekly] = useState<Record<string, string[] | null>>(defaultWeekly);
+  const [weekly, setWeekly] = useState<WeeklyAvailability>(defaultWeekly);
   const [jobTypes, setJobTypes] = useState<JobTypeRow[]>([{ type: "", price: "", duration_minutes: "" }]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -100,15 +98,6 @@ export function EditVendorPage() {
     );
   }
 
-  function setDayHours(day: string, value: string) {
-    if (!value.trim()) {
-      setWeekly((prev) => ({ ...prev, [day]: null }));
-      return;
-    }
-    const parts = value.split("-").map((s) => s.trim());
-    if (parts.length >= 2) setWeekly((prev) => ({ ...prev, [day]: [parts[0], parts[1]] }));
-  }
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedVendor) return;
@@ -146,6 +135,7 @@ export function EditVendorPage() {
       return;
     }
 
+    const weeklyPayload = normalizeWeeklyAvailability(weekly);
     const payload = {
       name: trimName,
       max_distance_miles: Number(maxDistanceMiles) || 25,
@@ -153,7 +143,7 @@ export function EditVendorPage() {
       experience_years: Number(experienceYears) || 0,
       negotiation_aggression: Number(negotiationAggression) || 1,
       pricing_strategy: pricingStrategy,
-      weekly_availability: weekly,
+      weekly_availability: weeklyPayload,
       job_types: jobTypesPayload,
       job_ids: selectedVendor.job_ids ?? [],
       reviews: selectedVendor.reviews ?? [],
@@ -286,24 +276,11 @@ export function EditVendorPage() {
             <CardHeader>
               <CardTitle className="text-base">Weekly availability</CardTitle>
               <p className="text-sm text-muted-foreground">
-                Format: start-end (e.g. 09:00-17:00). Leave empty for unavailable.
+                Use the grid to mark available hours each day.
               </p>
             </CardHeader>
-            <CardContent className="space-y-2">
-              {DAYS.map((day) => (
-                <div key={day} className="flex items-center gap-2">
-                  <Label className="w-28 capitalize">{day}</Label>
-                  <Input
-                    placeholder="09:00-17:00"
-                    value={
-                      weekly[day] && weekly[day]?.length === 2
-                        ? `${weekly[day]![0]}-${weekly[day]![1]}`
-                        : ""
-                    }
-                    onChange={(e) => setDayHours(day, e.target.value)}
-                  />
-                </div>
-              ))}
+            <CardContent>
+              <WeeklyAvailabilityCalendar value={weekly} onChange={setWeekly} />
             </CardContent>
           </Card>
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Plus, Trash2, Sparkles } from "lucide-react";
+import { WeeklyAvailabilityCalendar } from "@/components/WeeklyAvailabilityCalendar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,13 +9,10 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { insertVendor } from "@/lib/supabase-data";
 import { geocodeAddress } from "@/lib/geocode";
+import { createWeeklyAvailability, normalizeWeeklyAvailability, type WeeklyAvailability } from "@/lib/weekly-availability";
 import { useApp } from "@/context/AppContext";
 
-const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
-
-const defaultWeekly: Record<string, string[] | null> = Object.fromEntries(
-  DAYS.map((d) => [d, null])
-);
+const defaultWeekly = createWeeklyAvailability();
 
 type JobTypeRow = { type: string; price: string; duration_minutes: string };
 
@@ -28,7 +26,7 @@ export function NewVendorPage() {
   const [experienceYears, setExperienceYears] = useState("5");
   const [negotiationAggression, setNegotiationAggression] = useState("1");
   const [pricingStrategy, setPricingStrategy] = useState<"maximize_jobs" | "high_value_only" | "yield_optimizer">("maximize_jobs");
-  const [weekly, setWeekly] = useState<Record<string, string[] | null>>(defaultWeekly);
+  const [weekly, setWeekly] = useState<WeeklyAvailability>(defaultWeekly);
   const [jobTypes, setJobTypes] = useState<JobTypeRow[]>([
     { type: "", price: "", duration_minutes: "" },
   ]);
@@ -49,30 +47,23 @@ export function NewVendorPage() {
     );
   }
 
-  function setDayHours(day: string, value: string) {
-    if (!value.trim()) {
-      setWeekly((prev) => ({ ...prev, [day]: null }));
-      return;
-    }
-    const parts = value.split("-").map((s) => s.trim());
-    if (parts.length >= 2) setWeekly((prev) => ({ ...prev, [day]: [parts[0], parts[1]] }));
-  }
-
   function fillDemo() {
     setName("QuickFix Plumbing");
     setMaxDistanceMiles("30");
     setAddress("450 Serra Mall, Stanford, CA 94305");
     setExperienceYears("8");
     setNegotiationAggression("2");
-    setWeekly({
-      monday: ["08:00", "18:00"],
-      tuesday: ["08:00", "18:00"],
-      wednesday: ["08:00", "18:00"],
-      thursday: ["08:00", "18:00"],
-      friday: ["08:00", "18:00"],
-      saturday: ["09:00", "14:00"],
-      sunday: null,
-    });
+    setWeekly(
+      normalizeWeeklyAvailability({
+        monday: ["08:00-18:00"],
+        tuesday: ["08:00-18:00"],
+        wednesday: ["08:00-18:00"],
+        thursday: ["08:00-18:00"],
+        friday: ["08:00-18:00"],
+        saturday: ["09:00-14:00"],
+        sunday: null,
+      })
+    );
     setJobTypes([
       { type: "Plumbing Repair", price: "150", duration_minutes: "90" },
       { type: "Drain Cleaning", price: "180", duration_minutes: "60" },
@@ -117,6 +108,7 @@ export function NewVendorPage() {
       return;
     }
 
+    const weeklyPayload = normalizeWeeklyAvailability(weekly);
     const payload = {
       name: trimName,
       max_distance_miles: Number(maxDistanceMiles) || 25,
@@ -124,7 +116,7 @@ export function NewVendorPage() {
       experience_years: Number(experienceYears) || 0,
       negotiation_aggression: Number(negotiationAggression) || 1,
       pricing_strategy: pricingStrategy,
-      weekly_availability: weekly,
+      weekly_availability: weeklyPayload,
       job_types: jobTypesPayload,
       job_ids: [],
       reviews: [],
@@ -153,7 +145,7 @@ export function NewVendorPage() {
           ),
           aggression: Number(negotiationAggression) || 1,
           pricing_strategy: pricingStrategy,
-          weekly_availability: weekly,
+          weekly_availability: weeklyPayload,
         }),
       });
       if (agentRes.ok) {
@@ -284,24 +276,11 @@ export function NewVendorPage() {
             <CardHeader>
               <CardTitle className="text-base">Weekly availability</CardTitle>
               <p className="text-sm text-muted-foreground">
-                Format: start-end (e.g. 09:00-17:00). Leave empty for unavailable.
+                Use the grid to mark available hours each day.
               </p>
             </CardHeader>
-            <CardContent className="space-y-2">
-              {DAYS.map((day) => (
-                <div key={day} className="flex items-center gap-2">
-                  <Label className="w-28 capitalize">{day}</Label>
-                  <Input
-                    placeholder="09:00-17:00"
-                    value={
-                      weekly[day] && weekly[day]?.length === 2
-                        ? `${weekly[day]![0]}-${weekly[day]![1]}`
-                        : ""
-                    }
-                    onChange={(e) => setDayHours(day, e.target.value)}
-                  />
-                </div>
-              ))}
+            <CardContent>
+              <WeeklyAvailabilityCalendar value={weekly} onChange={setWeekly} />
             </CardContent>
           </Card>
 
