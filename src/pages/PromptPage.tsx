@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ArrowRight, Sparkles, Wrench, Calendar, Info } from 'lucide-react';
+import { ArrowRight, Sparkles, Wrench, Calendar, Info, Trash2 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -18,7 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { insertCustomer } from '@/lib/supabase-data';
+import { deleteCustomer, insertCustomer } from '@/lib/supabase-data';
 import { fetchAvgPrice } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -105,6 +105,26 @@ function inferServiceFromPrompt(prompt: string, fallback = ''): string {
   return service;
 }
 
+function extractExplicitBudgetFromPrompt(prompt: string): number | null {
+  const text = String(prompt || '');
+
+  // Prefer explicit currency mentions such as "$50" or "$1,250".
+  const currency = text.match(/\$\s*([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)/);
+  if (currency?.[1]) {
+    const n = Number(currency[1].replace(/,/g, ''));
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+
+  // Fallback for phrases like "budget is 50" / "max 50".
+  const budgetPhrase = text.match(/\b(?:budget|max(?:imum)?|cap)\s*(?:is|of|at|=|:)?\s*\$?\s*([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)\b/i);
+  if (budgetPhrase?.[1]) {
+    const n = Number(budgetPhrase[1].replace(/,/g, ''));
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+
+  return null;
+}
+
 
 export function PromptPage() {
   const [prompt, setPrompt] = useState('');
@@ -117,11 +137,22 @@ export function PromptPage() {
   const [customerSearch, setCustomerSearch] = useState('');
   const [newCustomerName, setNewCustomerName] = useState('');
   const [creatingCustomer, setCreatingCustomer] = useState(false);
+  const [deletingCustomerName, setDeletingCustomerName] = useState<string | null>(null);
   const [customerError, setCustomerError] = useState('');
   const navigate = useNavigate();
   const location = useLocation();
   const promptSelectCustomer = (location.state as { promptSelectCustomer?: boolean } | null)?.promptSelectCustomer ?? false;
-  const { setLastPrompt, customers, selectedCustomer, setSelectedCustomer, refetchCustomers, dataError, setNegotiateParams } = useApp();
+  const {
+    setLastPrompt,
+    customers,
+    selectedCustomer,
+    setSelectedCustomer,
+    refetchCustomers,
+    refetchVendors,
+    refetchJobs,
+    dataError,
+    setNegotiateParams,
+  } = useApp();
   const weekDays = nextWeekDays();
 
   useEffect(() => {
@@ -202,7 +233,11 @@ export function PromptPage() {
 
     const inferredService = inferServiceFromPrompt(trimmed, '');
     const service = inferredService || trimmed;
-    const budget = budgetStr ? parseInt(budgetStr, 10) : (avgPrice?.avg_price || 200);
+    const typedBudget = budgetStr ? Number.parseInt(budgetStr, 10) : Number.NaN;
+    const promptBudget = extractExplicitBudgetFromPrompt(trimmed);
+    const budget = Number.isFinite(typedBudget) && typedBudget > 0
+      ? typedBudget
+      : (promptBudget ?? avgPrice?.avg_price ?? 200);
     const urgencyInt = parseInt(urgency, 10);
 
     const slotsToUse =
@@ -271,6 +306,22 @@ export function PromptPage() {
     } else {
       setCustomerError(result.error);
     }
+  };
+
+  const handleDeleteCustomer = async (name: string) => {
+    if (!window.confirm(`Delete customer "${name}" and all of their scheduled events?`)) return;
+    setCustomerError('');
+    setDeletingCustomerName(name);
+    const result = await deleteCustomer(name);
+    setDeletingCustomerName(null);
+    if ('error' in result) {
+      setCustomerError(result.error);
+      return;
+    }
+    if (selectedCustomer?.consumer_name === name) {
+      setSelectedCustomer(null);
+    }
+    await Promise.allSettled([refetchCustomers(), refetchVendors(), refetchJobs()]);
   };
 
   return (
@@ -589,25 +640,37 @@ export function PromptPage() {
             ) : sortedCustomers.length === 0 ? null : (
             <div className="max-h-[200px] overflow-auto space-y-1">
               {sortedCustomers.slice(0, 50).map((c) => (
-                <button
-                  key={c.consumer_name}
-                  type="button"
-                  onClick={() => {
-                    setSelectedCustomer(c);
-                    setCustomerOpen(false);
-                  }}
-                  className={cn(
-                    'w-full text-left px-3 py-2 rounded-lg text-sm transition-colors',
-                    selectedCustomer?.consumer_name === c.consumer_name
-                      ? 'bg-primary/15 text-primary font-medium'
-                      : 'hover:bg-muted'
-                  )}
-                >
-                  {c.consumer_name}
-                  {c.job_count > 0 && (
-                    <span className="text-muted-foreground ml-2">({c.job_count} jobs)</span>
-                  )}
-                </button>
+                <div key={c.consumer_name} className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedCustomer(c);
+                      setCustomerOpen(false);
+                    }}
+                    className={cn(
+                      'flex-1 text-left px-3 py-2 rounded-lg text-sm transition-colors',
+                      selectedCustomer?.consumer_name === c.consumer_name
+                        ? 'bg-primary/15 text-primary font-medium'
+                        : 'hover:bg-muted'
+                    )}
+                  >
+                    {c.consumer_name}
+                    {c.job_count > 0 && (
+                      <span className="text-muted-foreground ml-2">({c.job_count} jobs)</span>
+                    )}
+                  </button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-destructive hover:text-destructive"
+                    disabled={deletingCustomerName != null}
+                    onClick={() => handleDeleteCustomer(c.consumer_name)}
+                    aria-label={`Delete ${c.consumer_name}`}
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
               ))}
             </div>
             )}

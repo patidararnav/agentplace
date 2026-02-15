@@ -712,6 +712,23 @@ async def update_vendor_data(vendor_id: int, req: UpsertVendorDataRequest) -> Di
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.delete("/api/data/vendors/{vendor_id}")
+async def delete_vendor_data(vendor_id: int) -> Dict[str, Any]:
+    """Delete vendor row from Supabase and cleanup related jobs."""
+    try:
+        from db_helpers import delete_vendor as _delete_vendor
+
+        ok = _delete_vendor(vendor_id)
+        if not ok:
+            raise HTTPException(status_code=500, detail=f"Failed to delete vendor {vendor_id}")
+        return {"ok": True, "vendor_id": vendor_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("delete_vendor_data %s: %s", vendor_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/api/data/customers")
 async def upsert_customer_data(req: UpsertCustomerDataRequest) -> Dict[str, Any]:
     """Persist customer data to Supabase (service-key path)."""
@@ -730,6 +747,23 @@ async def upsert_customer_data(req: UpsertCustomerDataRequest) -> Dict[str, Any]
         raise
     except Exception as exc:
         log.warning("upsert_customer_data: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.delete("/api/data/customers/{consumer_name}")
+async def delete_customer_data(consumer_name: str) -> Dict[str, Any]:
+    """Delete customer row from Supabase and cleanup related jobs."""
+    try:
+        from db_helpers import delete_customer as _delete_customer
+
+        ok = _delete_customer(consumer_name)
+        if not ok:
+            raise HTTPException(status_code=500, detail=f"Failed to delete customer {consumer_name}")
+        return {"ok": True, "consumer_name": consumer_name}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("delete_customer_data %s: %s", consumer_name, exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -758,6 +792,21 @@ async def create_job(req: CreateJobRequest) -> Dict[str, Any]:
     except Exception as exc:
         log.warning("create_job: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: int) -> Dict[str, Any]:
+    """Delete a job from Supabase and cleanup vendor/customer references."""
+    try:
+        from db_helpers import delete_job as _delete_job
+
+        ok = _delete_job(job_id)
+        if not ok:
+            return {"ok": False, "error": "Delete failed"}
+        return {"ok": True, "job_id": job_id}
+    except Exception as exc:
+        log.warning("delete_job %s: %s", job_id, exc)
+        return {"ok": False, "error": str(exc)}
 
 
 @app.post("/api/vendors")

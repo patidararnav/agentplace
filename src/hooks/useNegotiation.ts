@@ -333,10 +333,12 @@ export function useNegotiation(params: NegotiateParams | null) {
                 };
 
                 // Short log entry for negotiation
-                const label = e.role === 'customer-agent' ? 'Customer' : (e.vendor_name || 'Vendor');
+                const isCustomer = e.role === 'customer-agent';
+                const label = isCustomer ? 'Customer' : (e.vendor_name || 'Vendor');
+                const amountLabel = isCustomer ? 'counter' : 'offer';
                 next.logs = [
                   ...prev.logs,
-                  makeLogEntry(label, `$${e.price}: ${e.text.slice(0, 100)}`, 'negotiation'),
+                  makeLogEntry(label, `${amountLabel} $${e.price}: ${e.text.slice(0, 100)}`, 'negotiation'),
                 ];
                 break;
               }

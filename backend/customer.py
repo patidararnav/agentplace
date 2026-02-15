@@ -92,9 +92,35 @@ def acceptance_price_cap(
     return min(max(1, int(budget)), int(target * (1.0 + slack)))
 
 
+def should_accept_vendor_offer(
+    *,
+    budget: int,
+    urgency: int,
+    vendor_price: int,
+    days_ahead: float,
+    round_no: int,
+    max_rounds: int,
+) -> bool:
+    """Decide whether to accept the current vendor offer."""
+    price = max(0, int(vendor_price))
+    hard_max = max(1, int(budget))
+    cap = acceptance_price_cap(hard_max, urgency, days_ahead)
+
+    # Good relative deal for this urgency/time profile.
+    if price <= cap:
+        return True
+
+    # Endgame rule: never reject a within-budget offer solely due urgency shaping.
+    if int(round_no) >= int(max_rounds) and price <= hard_max:
+        return True
+
+    return False
+
+
 def max_rounds_for_urgency(urgency: int) -> int:
-    # Urgent customers resolve faster; low urgency negotiates longer.
-    return {1: 6, 2: 5, 3: 4, 4: 3, 5: 2}.get(int(urgency), 4)
+    # Negotiation round budget is fixed regardless of urgency.
+    _ = urgency
+    return 8
 
 
 def customer_offer_utility(
@@ -115,8 +141,10 @@ def customer_offer_utility(
     horizon = max(3.0, 7.0 - 4.0 * u)
     time_score = math.exp(-d / horizon)
 
-    w_time = 0.2 + 0.6 * u
-    w_price = 0.8 - 0.6 * u
+    # Low urgency: prioritize price heavily.
+    # High urgency: prioritize earlier appointment time.
+    w_time = 0.05 + 0.75 * u
+    w_price = 0.95 - 0.75 * u
 
     pref = str(time_price_preference or "balanced").strip().lower()
     if pref == "time_first":
@@ -150,6 +178,55 @@ def customer_counter_price(
     if previous_counter > 0:
         proposal = min(int(budget), max(proposal, previous_counter))
     return proposal
+
+
+def choose_best_offer(
+    *,
+    offers: List[Dict[str, Any]],
+    budget: int,
+    urgency: int,
+    time_price_preference: str,
+) -> Dict[str, Any]:
+    if not offers:
+        return {}
+
+    def _offer_price(offer: Dict[str, Any]) -> int:
+        try:
+            return int(offer.get("price") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _offer_start(offer: Dict[str, Any]) -> str:
+        return str(offer.get("start_iso") or "")
+
+    def _offer_priority(offer: Dict[str, Any]) -> int:
+        try:
+            return int(offer.get("priority") or 1)
+        except (TypeError, ValueError):
+            return 1
+
+    # Low urgency customers compare multiple dates and favor cheaper later slots.
+    if int(urgency) <= 2:
+        return min(
+            offers,
+            key=lambda o: (
+                _offer_price(o),
+                -_days_ahead_from_iso(_offer_start(o)),
+                -_offer_priority(o),
+            ),
+        )
+
+    return max(
+        offers,
+        key=lambda o: customer_offer_utility(
+            budget=budget,
+            urgency=urgency,
+            price=_offer_price(o),
+            start_iso=_offer_start(o),
+            time_price_preference=time_price_preference,
+            priority=_offer_priority(o),
+        ),
+    )
 
 
 def _parse_vendor_offers(fields: Dict[str, str]) -> List[Dict[str, Any]]:
@@ -582,16 +659,11 @@ def create_customer_agent(
             except (TypeError, ValueError):
                 return 1
 
-        best_offer = max(
-            offers,
-            key=lambda o: customer_offer_utility(
-                budget=budget,
-                urgency=urgency,
-                price=_offer_price(o),
-                start_iso=_offer_start(o),
-                time_price_preference=pref_token,
-                priority=_offer_priority(o),
-            ),
+        best_offer = choose_best_offer(
+            offers=offers,
+            budget=budget,
+            urgency=urgency,
+            time_price_preference=pref_token,
         )
 
         vp = _offer_price(best_offer)
@@ -618,19 +690,22 @@ def create_customer_agent(
         })
 
         days = _days_ahead_from_iso(start_iso)
-        accept_cap = acceptance_price_cap(budget, urgency, days)
         max_rounds = max_rounds_for_urgency(urgency)
 
         action = "counter"
         response_price = vp
 
-        if vp <= accept_cap:
+        if should_accept_vendor_offer(
+            budget=int(budget),
+            urgency=int(urgency),
+            vendor_price=vp,
+            days_ahead=days,
+            round_no=round_no,
+            max_rounds=max_rounds,
+        ):
             action = "accept"
         elif round_no >= max_rounds:
-            if vp <= min(int(budget), int(accept_cap * 1.05)):
-                action = "accept"
-            else:
-                action = "terminate"
+            action = "terminate"
         else:
             prev = previous_counters.get(va, 0)
             response_price = customer_counter_price(

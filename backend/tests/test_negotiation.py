@@ -3,12 +3,19 @@ from datetime import datetime, timedelta
 
 from customer import (
     _sanitize_customer_utterance,
+    choose_best_offer,
     acceptance_price_cap,
     customer_offer_utility,
+    max_rounds_for_urgency,
+    should_accept_vendor_offer,
     target_price_for_days,
 )
 from orchestrator import build_vendor_slot_candidates, _customer_utility_score
-from vendor import _sanitize_vendor_utterance, _slot_opening_price
+from vendor import (
+    _diverse_shortlist_for_negotiation,
+    _sanitize_vendor_utterance,
+    _slot_opening_price,
+)
 
 
 def _future_iso(days: int, hour: int = 9) -> str:
@@ -147,6 +154,43 @@ class NegotiationTests(unittest.TestCase):
         late_target = target_price_for_days(budget, urgency=1, days_ahead=7)
         self.assertGreater(now_target, late_target)
 
+    def test_max_rounds_is_fixed(self):
+        for urgency in (1, 2, 3, 4, 5):
+            self.assertEqual(max_rounds_for_urgency(urgency), 8)
+
+    def test_final_round_accepts_when_offer_is_within_budget(self):
+        self.assertFalse(
+            should_accept_vendor_offer(
+                budget=50,
+                urgency=1,
+                vendor_price=41,
+                days_ahead=0,
+                round_no=1,
+                max_rounds=8,
+            )
+        )
+        self.assertTrue(
+            should_accept_vendor_offer(
+                budget=50,
+                urgency=1,
+                vendor_price=41,
+                days_ahead=0,
+                round_no=8,
+                max_rounds=8,
+            )
+        )
+
+    def test_low_urgency_prefers_cheaper_later_offer(self):
+        near = {"offer_id": "near", "price": 180, "start_iso": _future_iso(1, 9), "priority": 3}
+        far = {"offer_id": "far", "price": 120, "start_iso": _future_iso(6, 9), "priority": 3}
+        chosen = choose_best_offer(
+            offers=[near, far],
+            budget=220,
+            urgency=1,
+            time_price_preference="price_first",
+        )
+        self.assertEqual(chosen.get("offer_id"), "far")
+
     def test_customer_text_sanitizer_blocks_reservation_disclosure(self):
         fallback = "Thanks for the offer. Could we do $729 for the proposed time slot?"
         leaked = "My maximum budget is $748, but I can do $729 if needed."
@@ -158,6 +202,22 @@ class NegotiationTests(unittest.TestCase):
         leaked = "I appreciate it, but my lowest price is $780 and that's final."
         safe = _sanitize_vendor_utterance(leaked, fallback)
         self.assertEqual(safe, fallback)
+
+    def test_vendor_shortlist_keeps_time_diversity(self):
+        offers = [
+            {"offer_id": "early", "price": 700, "start_iso": _future_iso(1, 9), "priority": 3},
+            {"offer_id": "mid", "price": 690, "start_iso": _future_iso(3, 9), "priority": 3},
+            {"offer_id": "late", "price": 680, "start_iso": _future_iso(6, 9), "priority": 3},
+            {"offer_id": "late2", "price": 675, "start_iso": _future_iso(6, 11), "priority": 3},
+        ]
+        shortlisted = _diverse_shortlist_for_negotiation(
+            strategy="maximize_jobs",
+            offers=offers,
+            max_items=3,
+        )
+        ids = {str(o.get("offer_id")) for o in shortlisted}
+        self.assertIn("early", ids)
+        self.assertTrue("late" in ids or "late2" in ids)
 
 
 if __name__ == "__main__":

@@ -23,9 +23,17 @@ function normalizeVendorPricingStrategy(raw: unknown): VendorPricingStrategy {
     .trim()
     .toLowerCase()
     .replace(/[-\s]+/g, '_');
+  if (token === '2') return 'high_value_only';
+  if (token === '3') return 'yield_optimizer';
   if (token === 'high_value_only') return 'high_value_only';
   if (token === 'yield_optimizer') return 'yield_optimizer';
   return 'maximize_jobs';
+}
+
+function vendorPricingStrategyCode(strategy: VendorPricingStrategy): 1 | 2 | 3 {
+  if (strategy === 'high_value_only') return 2;
+  if (strategy === 'yield_optimizer') return 3;
+  return 1;
 }
 
 function isMissingColumnError(message: string, column: string): boolean {
@@ -193,7 +201,9 @@ function rowToVendor(row: Record<string, unknown>): VendorData {
   const reviews = Array.isArray(row.reviews) ? (row.reviews as string[]) : [];
   const avg = row.average_rating != null ? Number(row.average_rating) : undefined;
   const total = row.total_ratings != null ? Number(row.total_ratings) : undefined;
-  const pricingStrategy = normalizeVendorPricingStrategy(row.pricing_strategy);
+  const pricingStrategy = normalizeVendorPricingStrategy(
+    row.pricing_strategy ?? row.strategy
+  );
   return {
     vendor_id: Number(row.vendor_id),
     name: (row.name as string) ?? '',
@@ -241,6 +251,100 @@ function upsertLocalJob(job: JobData): void {
   if (idx >= 0) jobs[idx] = job;
   else jobs.push(job);
   writeList(STORAGE_KEYS.jobs, jobs);
+}
+
+function toFiniteIntList(values: unknown): number[] {
+  if (!Array.isArray(values)) return [];
+  return values
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value))
+    .map((value) => Math.trunc(value));
+}
+
+function removeLocalJobsByIds(jobIds: number[]): void {
+  const removeSet = new Set(toFiniteIntList(jobIds));
+  if (removeSet.size === 0) return;
+
+  const jobs = readList<JobData>(STORAGE_KEYS.jobs).filter((job) => !removeSet.has(job.job_id));
+  writeList(STORAGE_KEYS.jobs, jobs);
+
+  const vendors = readList<VendorData>(STORAGE_KEYS.vendors).map((vendor) => {
+    const nextJobIds = toFiniteIntList(vendor.job_ids).filter((id) => !removeSet.has(id));
+    return { ...vendor, job_ids: nextJobIds };
+  });
+  writeList(STORAGE_KEYS.vendors, vendors);
+
+  const consumers = readList<CustomerData>(STORAGE_KEYS.consumers).map((consumer) => {
+    const nextJobIds = toFiniteIntList(consumer.job_ids).filter((id) => !removeSet.has(id));
+    return { ...consumer, job_ids: nextJobIds, job_count: nextJobIds.length };
+  });
+  writeList(STORAGE_KEYS.consumers, consumers);
+}
+
+function removeLocalCustomer(consumerName: string): void {
+  const cleaned = String(consumerName ?? '').trim();
+  if (!cleaned) return;
+
+  const jobs = readList<JobData>(STORAGE_KEYS.jobs);
+  const removedIds = jobs.filter((job) => job.consumer_name === cleaned).map((job) => job.job_id);
+  if (removedIds.length > 0) {
+    removeLocalJobsByIds(removedIds);
+  }
+
+  const consumers = readList<CustomerData>(STORAGE_KEYS.consumers).filter(
+    (consumer) => consumer.consumer_name !== cleaned
+  );
+  writeList(STORAGE_KEYS.consumers, consumers);
+}
+
+function removeLocalVendor(vendorId: number): void {
+  const id = Number(vendorId);
+  if (!Number.isFinite(id) || id <= 0) return;
+
+  const jobs = readList<JobData>(STORAGE_KEYS.jobs);
+  const removedIds = jobs.filter((job) => job.vendor_id === id).map((job) => job.job_id);
+  if (removedIds.length > 0) {
+    removeLocalJobsByIds(removedIds);
+  }
+
+  const vendors = readList<VendorData>(STORAGE_KEYS.vendors).filter((vendor) => vendor.vendor_id !== id);
+  writeList(STORAGE_KEYS.vendors, vendors);
+}
+
+async function removeJobIdsFromVendorInSupabase(vendorId: number, removeIds: Set<number>): Promise<void> {
+  if (!Number.isFinite(vendorId) || vendorId <= 0 || removeIds.size === 0) return;
+  try {
+    const row = await supabase
+      .from(TABLE_VENDOR)
+      .select('job_ids')
+      .eq('vendor_id', vendorId)
+      .maybeSingle();
+    if (row.error || !row.data) return;
+    const nextIds = toFiniteIntList((row.data as { job_ids?: unknown }).job_ids).filter((id) => !removeIds.has(id));
+    await supabase.from(TABLE_VENDOR).update({ job_ids: nextIds }).eq('vendor_id', vendorId);
+  } catch {
+    // Best-effort only.
+  }
+}
+
+async function removeJobIdsFromConsumerInSupabase(consumerName: string, removeIds: Set<number>): Promise<void> {
+  const cleaned = String(consumerName ?? '').trim();
+  if (!cleaned || removeIds.size === 0) return;
+  try {
+    const row = await supabase
+      .from(TABLE_CONSUMER)
+      .select('job_ids, job_count')
+      .eq('consumer_name', cleaned)
+      .maybeSingle();
+    if (row.error || !row.data) return;
+    const nextIds = toFiniteIntList((row.data as { job_ids?: unknown }).job_ids).filter((id) => !removeIds.has(id));
+    await supabase
+      .from(TABLE_CONSUMER)
+      .update({ job_ids: nextIds, job_count: nextIds.length })
+      .eq('consumer_name', cleaned);
+  } catch {
+    // Best-effort only.
+  }
 }
   
 function ensureInitialized(): void {
@@ -506,6 +610,184 @@ export async function createJob(payload: {
   return { error: fallback.error || backendError || 'Failed to create job' };
 }
 
+/** Delete one calendar job/event and cleanup vendor/customer references. */
+export async function deleteJob(jobId: number): Promise<{ ok: true } | { error: string }> {
+  let backendError = '';
+  try {
+    const res = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data?.ok) {
+      removeLocalJobsByIds([jobId]);
+      return { ok: true };
+    }
+    backendError = String(data?.detail ?? data?.error ?? `Server error: ${res.status}`);
+  } catch (e) {
+    backendError = e instanceof Error ? e.message : 'Failed to delete job';
+    console.warn('deleteJob API:', backendError);
+  }
+
+  const existing = await fetchJobById(jobId);
+  const tableNames = jobsTableNames();
+  let directError = '';
+  let deleted = false;
+
+  for (const tableName of tableNames) {
+    const { error } = await supabase.from(tableName).delete().eq('job_id', jobId);
+    if (!error) {
+      deleted = true;
+      break;
+    }
+    const isNotFound = isMissingRelationError(error.message, error.code);
+    if (!isNotFound) {
+      directError = error.message;
+      break;
+    }
+  }
+
+  if (deleted) {
+    if (existing) {
+      const removeIds = new Set([jobId]);
+      await Promise.allSettled([
+        removeJobIdsFromVendorInSupabase(existing.vendor_id, removeIds),
+        removeJobIdsFromConsumerInSupabase(existing.consumer_name, removeIds),
+      ]);
+    }
+    removeLocalJobsByIds([jobId]);
+    return { ok: true };
+  }
+
+  const localHas = readList<JobData>(STORAGE_KEYS.jobs).some((job) => job.job_id === jobId);
+  if (localHas) {
+    removeLocalJobsByIds([jobId]);
+    return { ok: true };
+  }
+
+  if (backendError && directError) {
+    return { error: `${backendError}. Direct Supabase fallback failed: ${directError}` };
+  }
+  return { error: directError || backendError || 'Failed to delete job' };
+}
+
+/** Delete a customer and their scheduled jobs. */
+export async function deleteCustomer(consumerName: string): Promise<{ ok: true } | { error: string }> {
+  const cleaned = String(consumerName ?? '').trim();
+  if (!cleaned) return { error: 'Customer name is required' };
+
+  let backendError = '';
+  try {
+    const res = await fetch(`/api/data/customers/${encodeURIComponent(cleaned)}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data?.ok) {
+      removeLocalCustomer(cleaned);
+      return { ok: true };
+    }
+    backendError = String(data?.detail ?? data?.error ?? `Server error: ${res.status}`);
+  } catch (e) {
+    backendError = e instanceof Error ? e.message : 'Failed to delete customer';
+    console.warn('deleteCustomer API:', backendError);
+  }
+
+  const jobs = await fetchJobsForCustomer(cleaned);
+  const removeIds = new Set(jobs.map((job) => job.job_id));
+  const vendorIds = Array.from(
+    new Set(jobs.map((job) => Number(job.vendor_id)).filter((id) => Number.isFinite(id) && id > 0))
+  );
+
+  const tableNames = jobsTableNames();
+  for (const tableName of tableNames) {
+    const { error } = await supabase.from(tableName).delete().eq('consumer_name', cleaned);
+    if (!error) break;
+    if (!isMissingRelationError(error.message, error.code)) break;
+  }
+
+  await Promise.allSettled(vendorIds.map((vendorId) => removeJobIdsFromVendorInSupabase(vendorId, removeIds)));
+
+  const { error: customerError } = await supabase
+    .from(TABLE_CONSUMER)
+    .delete()
+    .eq('consumer_name', cleaned);
+
+  if (!customerError) {
+    removeLocalCustomer(cleaned);
+    return { ok: true };
+  }
+
+  const localHas = readList<CustomerData>(STORAGE_KEYS.consumers).some((c) => c.consumer_name === cleaned);
+  if (localHas) {
+    removeLocalCustomer(cleaned);
+    return { ok: true };
+  }
+
+  const directError = customerError.message;
+  if (backendError && directError) {
+    return { error: `${backendError}. Direct Supabase fallback failed: ${directError}` };
+  }
+  return { error: directError || backendError || `Failed to delete customer ${cleaned}` };
+}
+
+/** Delete a vendor and their scheduled jobs. */
+export async function deleteVendor(vendorId: number): Promise<{ ok: true } | { error: string }> {
+  const id = Number(vendorId);
+  if (!Number.isFinite(id) || id <= 0) return { error: 'Valid vendor_id is required' };
+
+  let backendError = '';
+  try {
+    const res = await fetch(`/api/data/vendors/${id}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data?.ok) {
+      removeLocalVendor(id);
+      return { ok: true };
+    }
+    backendError = String(data?.detail ?? data?.error ?? `Server error: ${res.status}`);
+  } catch (e) {
+    backendError = e instanceof Error ? e.message : 'Failed to delete vendor';
+    console.warn('deleteVendor API:', backendError);
+  }
+
+  const jobs = await fetchJobsForVendor(id);
+  const removeIds = new Set(jobs.map((job) => job.job_id));
+  const consumerNames = Array.from(
+    new Set(
+      jobs
+        .map((job) => String(job.consumer_name ?? '').trim())
+        .filter((name) => name.length > 0)
+    )
+  );
+
+  const tableNames = jobsTableNames();
+  for (const tableName of tableNames) {
+    const { error } = await supabase.from(tableName).delete().eq('vendor_id', id);
+    if (!error) break;
+    if (!isMissingRelationError(error.message, error.code)) break;
+  }
+
+  await Promise.allSettled(
+    consumerNames.map((consumerName) => removeJobIdsFromConsumerInSupabase(consumerName, removeIds))
+  );
+
+  const { error: vendorError } = await supabase
+    .from(TABLE_VENDOR)
+    .delete()
+    .eq('vendor_id', id);
+
+  if (!vendorError) {
+    removeLocalVendor(id);
+    return { ok: true };
+  }
+
+  const localHas = readList<VendorData>(STORAGE_KEYS.vendors).some((v) => v.vendor_id === id);
+  if (localHas) {
+    removeLocalVendor(id);
+    return { ok: true };
+  }
+
+  const directError = vendorError.message;
+  if (backendError && directError) {
+    return { error: `${backendError}. Direct Supabase fallback failed: ${directError}` };
+  }
+  return { error: directError || backendError || `Failed to delete vendor ${id}` };
+}
+
 /** Insert new vendor into Supabase public."VendorData". Falls back to localStorage on error. */
 export async function insertVendor(payload: {
   vendor_id?: number;
@@ -523,6 +805,7 @@ export async function insertVendor(payload: {
   total_ratings?: string | number | null;
 }): Promise<VendorData | null> {
   const strategy = normalizeVendorPricingStrategy(payload.pricing_strategy);
+  const strategyCode = vendorPricingStrategyCode(strategy);
 
   try {
     const res = await fetch('/api/data/vendors', {
@@ -531,6 +814,7 @@ export async function insertVendor(payload: {
       body: JSON.stringify({
         ...payload,
         pricing_strategy: strategy,
+        strategy: strategyCode,
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -560,6 +844,7 @@ export async function insertVendor(payload: {
     experience_years: payload.experience_years,
     negotiation_aggression: payload.negotiation_aggression,
     pricing_strategy: strategy,
+    strategy: strategyCode,
     job_types: payload.job_types ?? [],
     job_ids: payload.job_ids ?? [],
     reviews: payload.reviews ?? [],
@@ -570,6 +855,12 @@ export async function insertVendor(payload: {
   let { data, error } = await supabase.from(TABLE_VENDOR).insert(row).select().single();
   if (error && isMissingColumnError(error.message, 'pricing_strategy')) {
     const { pricing_strategy: _omitted, ...legacyRow } = row;
+    const retry = await supabase.from(TABLE_VENDOR).insert(legacyRow).select().single();
+    data = retry.data;
+    error = retry.error;
+  }
+  if (error && isMissingColumnError(error.message, 'strategy')) {
+    const { strategy: _omitted, ...legacyRow } = row;
     const retry = await supabase.from(TABLE_VENDOR).insert(legacyRow).select().single();
     data = retry.data;
     error = retry.error;
@@ -622,6 +913,7 @@ export async function updateVendor(
   }
 ): Promise<VendorData | null> {
   const strategy = normalizeVendorPricingStrategy(payload.pricing_strategy);
+  const strategyCode = vendorPricingStrategyCode(strategy);
 
   try {
     const res = await fetch(`/api/data/vendors/${vendorId}`, {
@@ -630,6 +922,7 @@ export async function updateVendor(
       body: JSON.stringify({
         ...payload,
         pricing_strategy: strategy,
+        strategy: strategyCode,
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -648,6 +941,7 @@ export async function updateVendor(
     experience_years: payload.experience_years,
     negotiation_aggression: payload.negotiation_aggression,
     pricing_strategy: strategy,
+    strategy: strategyCode,
     job_types: payload.job_types,
     job_ids: payload.job_ids ?? [],
     reviews: payload.reviews ?? [],
@@ -662,6 +956,17 @@ export async function updateVendor(
     .single();
   if (error && isMissingColumnError(error.message, 'pricing_strategy')) {
     const { pricing_strategy: _omitted, ...legacyRow } = row;
+    const retry = await supabase
+      .from(TABLE_VENDOR)
+      .update(legacyRow)
+      .eq('vendor_id', vendorId)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
+  if (error && isMissingColumnError(error.message, 'strategy')) {
+    const { strategy: _omitted, ...legacyRow } = row;
     const retry = await supabase
       .from(TABLE_VENDOR)
       .update(legacyRow)

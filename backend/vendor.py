@@ -45,12 +45,15 @@ PRICING_STRATEGY_YIELD_OPTIMIZER = "yield_optimizer"
 DEFAULT_PRICING_STRATEGY = PRICING_STRATEGY_MAXIMIZE_JOBS
 
 _PRICING_STRATEGY_ALIASES = {
+    "1": PRICING_STRATEGY_MAXIMIZE_JOBS,
     "maximize_jobs": PRICING_STRATEGY_MAXIMIZE_JOBS,
     "maximize_number_of_jobs": PRICING_STRATEGY_MAXIMIZE_JOBS,
     "max_jobs": PRICING_STRATEGY_MAXIMIZE_JOBS,
+    "2": PRICING_STRATEGY_HIGH_VALUE_ONLY,
     "high_value_only": PRICING_STRATEGY_HIGH_VALUE_ONLY,
     "high_value_jobs_only": PRICING_STRATEGY_HIGH_VALUE_ONLY,
     "aggressive": PRICING_STRATEGY_HIGH_VALUE_ONLY,
+    "3": PRICING_STRATEGY_YIELD_OPTIMIZER,
     "yield_optimizer": PRICING_STRATEGY_YIELD_OPTIMIZER,
     "yield_optimization": PRICING_STRATEGY_YIELD_OPTIMIZER,
 }
@@ -510,6 +513,46 @@ def _rank_offers_for_strategy(strategy: str, offers: List[Dict[str, Any]]) -> Li
     )
 
 
+def _diverse_shortlist_for_negotiation(
+    *,
+    strategy: str,
+    offers: List[Dict[str, Any]],
+    max_items: int = 3,
+) -> List[Dict[str, Any]]:
+    if not offers:
+        return []
+
+    ranked = _rank_offers_for_strategy(strategy, offers)
+    if len(ranked) <= max_items:
+        return ranked
+
+    earliest = min(ranked, key=lambda o: str(o.get("start_iso", "")))
+    latest = max(ranked, key=lambda o: str(o.get("start_iso", "")))
+    preferred = ranked[0]
+
+    picked: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+
+    def _add(offer: Dict[str, Any]) -> None:
+        oid = str(offer.get("offer_id", ""))
+        if oid in seen:
+            return
+        seen.add(oid)
+        picked.append(offer)
+
+    # Always include a strategy-best quote plus near/far time alternatives.
+    _add(preferred)
+    _add(earliest)
+    _add(latest)
+
+    for offer in ranked:
+        if len(picked) >= max_items:
+            break
+        _add(offer)
+
+    return picked[:max_items]
+
+
 _SENSITIVE_VENDOR_PATTERNS = [
     re.compile(
         r"\b(min(?:imum)?|lowest|floor|final|best)\s+(?:price|offer)\b",
@@ -758,8 +801,11 @@ def create_vendor_agent(
                     "days_ahead": float(slot.get("days_ahead", 0.0)),
                 })
 
-            ranked = _rank_offers_for_strategy(strategy, offers)
-            shortlisted = ranked[: min(3, len(ranked))]
+            shortlisted = _diverse_shortlist_for_negotiation(
+                strategy=strategy,
+                offers=offers,
+                max_items=min(3, len(offers)),
+            )
             selected = shortlisted[0]
             deal_state[rid] = {
                 "service": svc,

@@ -898,6 +898,9 @@ def create_orchestrator_agent(
     service, price, rounds) invoked when a deal closes, e.g. to write to Supabase.
     """
 
+    # Keep round budget deterministic across all sessions.
+    max_rounds = 8
+
     kwargs: Dict[str, Any] = {"name": "orchestrator", "seed": seed}
     if port is not None:
         kwargs["port"] = port

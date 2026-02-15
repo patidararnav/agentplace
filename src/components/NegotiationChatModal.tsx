@@ -19,14 +19,14 @@ interface NegotiationChatModalProps {
 export function NegotiationChatModal({ messages, vendorName, onClose }: NegotiationChatModalProps) {
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-lg max-h-[85vh] flex flex-col gap-0 p-0 bg-card border-border">
+      <DialogContent className="sm:max-w-lg h-[85vh] max-h-[85vh] flex flex-col gap-0 p-0 bg-card border-border">
         <DialogHeader className="px-5 py-4 border-b border-border/50">
           <DialogTitle className="text-base">
             Agent Negotiation — {vendorName}
           </DialogTitle>
         </DialogHeader>
 
-        <ScrollArea className="flex-1 min-h-0">
+        <ScrollArea className="flex-1 min-h-0 overflow-hidden">
           <div className="p-5 space-y-4">
             {messages.length === 0 && (
               <p className="text-sm text-muted-foreground">

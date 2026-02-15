@@ -1,21 +1,23 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Pencil, Plus, ArrowLeft, Calendar, Wrench, TrendingUp, Star, Briefcase, Search, Loader2 } from 'lucide-react';
+import { Pencil, Plus, ArrowLeft, Calendar, Wrench, TrendingUp, Star, Briefcase, Search, Loader2, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { useApp } from '@/context/AppContext';
-import { fetchJobsForVendor } from '@/lib/supabase-data';
+import { deleteVendor, fetchJobsForVendor } from '@/lib/supabase-data';
 import type { JobData } from '@/types';
 
 export function VendorDashboard() {
   const navigate = useNavigate();
-  const { selectedVendor, vendors, setSelectedVendor } = useApp();
+  const { selectedVendor, vendors, setSelectedVendor, refetchVendors, refetchCustomers, refetchJobs } = useApp();
   const vendor = selectedVendor;
   const [vendorSearch, setVendorSearch] = useState('');
   const [vendorJobs, setVendorJobs] = useState<JobData[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
+  const [deletingVendorId, setDeletingVendorId] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState('');
 
   useEffect(() => {
     if (!vendor) {
@@ -69,6 +71,24 @@ export function VendorDashboard() {
       })
     : [];
 
+  async function handleDeleteVendor() {
+    if (!vendor) return;
+    if (!window.confirm(`Delete vendor "${vendor.name}" and all of their scheduled events?`)) return;
+
+    setDeleteError('');
+    setDeletingVendorId(vendor.vendor_id);
+    const result = await deleteVendor(vendor.vendor_id);
+    setDeletingVendorId(null);
+
+    if ('error' in result) {
+      setDeleteError(result.error);
+      return;
+    }
+
+    setSelectedVendor(null);
+    await Promise.allSettled([refetchVendors(), refetchCustomers(), refetchJobs()]);
+  }
+
   return (
     <div className="min-h-svh bg-background flex flex-col">
       <header className="px-6 py-4 border-b border-border/40">
@@ -98,12 +118,34 @@ export function VendorDashboard() {
                 Edit vendor
               </Button>
             )}
+            {vendor && (
+              <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setSelectedVendor(null)}>
+                Switch vendor
+              </Button>
+            )}
+            {vendor && (
+              <Button
+                size="sm"
+                variant="destructive"
+                className="gap-1.5"
+                disabled={deletingVendorId != null}
+                onClick={handleDeleteVendor}
+              >
+                <Trash2 className="size-3.5" />
+                {deletingVendorId === vendor.vendor_id ? 'Deleting…' : 'Delete vendor'}
+              </Button>
+            )}
           </div>
         </div>
       </header>
 
       <main className="flex-1 overflow-auto px-6 py-6">
         <div className="max-w-4xl mx-auto space-y-6">
+          {deleteError && (
+            <div className="rounded-lg bg-destructive/10 text-destructive text-sm px-4 py-2">
+              {deleteError}
+            </div>
+          )}
           {!vendor && (
             <Card>
               <CardContent className="p-6 text-center space-y-4">
@@ -260,11 +302,6 @@ export function VendorDashboard() {
                 )}
               </div>
 
-              <div className="pt-4 border-t border-border/20">
-                <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setSelectedVendor(null)}>
-                  Switch vendor
-                </Button>
-              </div>
             </>
           )}
         </div>
