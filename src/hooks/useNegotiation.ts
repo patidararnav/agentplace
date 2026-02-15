@@ -33,6 +33,7 @@ export interface VendorResultEvent {
   type: 'vendor_result';
   vendor_name: string;
   vendor_address: string;
+  vendor_id?: number;
   outcome: string;
   price: number;
   rounds: number;

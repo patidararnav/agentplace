@@ -457,6 +457,7 @@ def create_vendor_agent(
             "TYPE=vendor_register",
             f"VENDOR={agent.address}",
             f"NAME={name}",
+            f"VENDOR_ID={vendor_id}",
             f"SERVICES={','.join(sorted(supported))}",
             f"AGGRESSION={aggression}",
             f"STRATEGY={strategy}",
@@ -470,18 +471,14 @@ def create_vendor_agent(
 
     @agent.on_event("startup")
     async def on_startup(ctx: Context) -> None:
-        print(f"[DEBUG] {name} on_startup FIRED", flush=True)
         ctx.logger.info("Vendor ready: %s  address=%s", name, agent.address)
         if not os.getenv("AGENTVERSE_KEY") and mailbox:
             ctx.logger.warning("AGENTVERSE_KEY is not set.")
-        print(f"[DEBUG] {name} sending vendor_register to orchestrator...", flush=True)
-        result = await ctx.send(orchestrator_address, make_chat_message(_registration_text()))
-        print(f"[DEBUG] {name} ctx.send() returned: {result}", flush=True)
+        await ctx.send(orchestrator_address, make_chat_message(_registration_text()))
 
     @agent.on_interval(period=45.0)
     async def refresh_registration(ctx: Context) -> None:
-        result = await ctx.send(orchestrator_address, make_chat_message(_registration_text()))
-        print(f"[DEBUG] {name} refresh_registration ctx.send() returned: {result}", flush=True)
+        await ctx.send(orchestrator_address, make_chat_message(_registration_text()))
 
     @chat_proto.on_message(model=ChatMessage)
     async def handle_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:

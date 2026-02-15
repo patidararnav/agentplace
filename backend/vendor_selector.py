@@ -1,10 +1,8 @@
 """
 Vendor selection agent for choosing relevant vendors per customer request.
 
-This module provides an LLM-based selector that intelligently matches customer
-service requests to vendors based on their capabilities.  A deterministic
-heuristic fallback ensures the system keeps working when the LLM is
-unavailable.
+This module provides an LLM-based selector that matches customer service
+requests to vendors based on their capabilities.
 """
 
 from __future__ import annotations
@@ -14,7 +12,7 @@ import logging
 import re
 from typing import Any, Dict, List, Set, Tuple
 
-from chat_utils import generate_text
+from chat_utils import LLMCallError, generate_text
 
 logger = logging.getLogger(__name__)
 
@@ -42,51 +40,8 @@ Where "ids" is a list of the INTEGER vendor numbers from the catalog.\
 """
 
 
-# ─── Heuristic fallback ─────────────────────────────────────────────────
-
-def _normalize_tokens(text: str) -> Set[str]:
-    """Extract lowercase alpha-numeric tokens of length >= 3."""
-    return {
-        t for t in re.findall(r"[a-z0-9]+", (text or "").lower())
-        if len(t) >= 3
-    }
-
-
-def _heuristic_select(
-    *,
-    service: str,
-    notes: str,
-    vendor_registry: Dict[str, Dict[str, Any]],
-) -> Set[str]:
-    """Deterministic fallback selector when LLM output is unavailable."""
-    service_l = (service or "").strip().lower()
-    request_tokens = _normalize_tokens(f"{service_l} {notes}")
-    if service_l:
-        request_tokens.add(service_l)
-
-    matched: Set[str] = set()
-    for address, profile in vendor_registry.items():
-        services = [
-            str(s).strip().lower()
-            for s in profile.get("services", [])
-            if str(s).strip()
-        ]
-        if not services:
-            continue
-
-        # Direct overlap between category/subservice strings.
-        if any(service_l == svc or service_l in svc or svc in service_l for svc in services):
-            matched.add(address)
-            continue
-
-        # Token overlap with requested intent.
-        for svc in services:
-            svc_tokens = _normalize_tokens(svc)
-            if request_tokens & svc_tokens:
-                matched.add(address)
-                break
-
-    return matched
+class VendorSelectionError(RuntimeError):
+    """Raised when vendor matching cannot be completed by the LLM."""
 
 
 # ─── JSON extraction helper ─────────────────────────────────────────────
@@ -120,7 +75,7 @@ def _extract_json_object(raw: str) -> Dict[str, Any]:
 # ─── Vendor Selector Agent ──────────────────────────────────────────────
 
 class VendorSelectorAgent:
-    """LLM-based selector with robust fallback behavior.
+    """LLM-based selector.
 
     Instead of asking the LLM to reproduce long agent addresses, we map
     vendors to short numeric IDs in the prompt and map back after the LLM
@@ -138,8 +93,12 @@ class VendorSelectorAgent:
         budget: int,
         vendor_registry: Dict[str, Dict[str, Any]],
     ) -> Tuple[Set[str], str]:
-        """Return ``(matched_addresses, source)`` where source is
-        ``"llm"`` or ``"heuristic"``."""
+        """Return ``(matched_addresses, source)`` where source is ``"llm"``.
+
+        Raises:
+            VendorSelectionError: LLM call fails, output is invalid, or no
+                vendors are matched.
+        """
 
         if not vendor_registry:
             return set(), "empty_registry"
@@ -154,6 +113,7 @@ class VendorSelectorAgent:
 
         catalog_lines: List[str] = []
         idx_to_address: Dict[int, str] = {}
+        catalog_debug: List[Dict[str, Any]] = []
 
         for idx, address in enumerate(sorted_addresses):
             profile = vendor_registry[address]
@@ -169,6 +129,13 @@ class VendorSelectorAgent:
                 f"  {idx}. {name} — services: {', '.join(services)}"
             )
             idx_to_address[idx] = address
+            catalog_debug.append({
+                "idx": idx,
+                "name": name,
+                "address": address,
+                "vendor_id": int(profile.get("vendor_id") or 0),
+                "services": services,
+            })
 
         if not catalog_lines:
             return set(), "empty_catalog"
@@ -187,23 +154,36 @@ class VendorSelectorAgent:
 
         logger.info(
             "[VendorSelector] Asking LLM to match service=%r  "
-            "notes=%r  budget=$%s  catalog_size=%d",
-            service, notes, budget, len(catalog_lines),
+            "notes_len=%d  budget=$%s  catalog_size=%d",
+            service, len(notes or ""), budget, len(catalog_lines),
         )
 
         # ── Call the LLM with structured-output-friendly params ──
-        raw = await generate_text(
-            system_prompt=VENDOR_SELECTOR_SYSTEM_PROMPT,
-            user_prompt=prompt,
-            fallback='{"ids":[],"reason":"llm_unavailable"}',
-            max_tokens=300,
-            temperature=0.2,
-        )
+        try:
+            raw = await generate_text(
+                system_prompt=VENDOR_SELECTOR_SYSTEM_PROMPT,
+                user_prompt=prompt,
+                max_tokens=300,
+                temperature=0.2,
+                strict=True,
+            )
+        except LLMCallError as exc:
+            logger.error(
+                "[VendorSelector] LLM call failed while matching vendors: %s",
+                exc,
+            )
+            raise VendorSelectionError(
+                "LLM failed to match vendors because the request to the model failed."
+            ) from exc
 
         logger.info("[VendorSelector] LLM raw response: %s", raw[:500])
 
         # ── Parse LLM response ──
         parsed = _extract_json_object(raw)
+        if not parsed:
+            raise VendorSelectionError(
+                "LLM failed to match vendors because it returned invalid JSON."
+            )
         raw_ids = parsed.get("ids", parsed.get("selected_ids", []))
         reason = parsed.get("reason", "")
 
@@ -214,45 +194,42 @@ class VendorSelectorAgent:
             # "0,2,5" → [0, 2, 5]
             raw_ids = [x.strip() for x in raw_ids.split(",") if x.strip()]
 
+        normalized_ids: List[int] = []
         selected_addresses: List[str] = []
         for v in raw_ids:
             try:
                 idx = int(v)
             except (ValueError, TypeError):
                 continue
+            normalized_ids.append(idx)
             if idx in idx_to_address:
                 selected_addresses.append(idx_to_address[idx])
 
         selected_addresses = selected_addresses[: self.max_selected]
+        selected_names = [
+            vendor_registry.get(a, {}).get("name", a)
+            for a in selected_addresses
+        ]
+        logger.info(
+            "[VendorSelector] Parsed response ids_raw=%r ids_normalized=%s mapped_addresses=%s mapped_names=%s reason=%r",
+            raw_ids,
+            normalized_ids,
+            selected_addresses,
+            selected_names,
+            reason,
+        )
+        logger.debug(
+            "[VendorSelector] Catalog detail: %s",
+            json.dumps(catalog_debug, sort_keys=True),
+        )
 
         if selected_addresses:
-            names = [
-                vendor_registry.get(a, {}).get("name", a)
-                for a in selected_addresses
-            ]
             logger.info(
                 "[VendorSelector] LLM selected %d vendors: %s  reason=%s",
-                len(selected_addresses), names, reason,
+                len(selected_addresses), selected_names, reason,
             )
             return set(selected_addresses), "llm"
 
-        # ── Fallback to heuristic ──
-        logger.info(
-            "[VendorSelector] LLM returned no matches, falling back to heuristic"
+        raise VendorSelectionError(
+            "LLM failed to match vendors because it did not return any valid vendor IDs."
         )
-        heuristic = _heuristic_select(
-            service=service,
-            notes=notes,
-            vendor_registry=vendor_registry,
-        )
-        if heuristic:
-            names = [
-                vendor_registry.get(a, {}).get("name", a) for a in heuristic
-            ]
-            logger.info(
-                "[VendorSelector] Heuristic selected %d vendors: %s",
-                len(heuristic), names,
-            )
-            return heuristic, "heuristic"
-
-        return set(), "none"
