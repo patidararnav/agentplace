@@ -174,7 +174,7 @@ export function AgentMatchingPage() {
         <div className="mx-6 mt-4 p-4 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm">
           <p className="font-medium">Connection Error</p>
           <p className="text-xs mt-1 opacity-80">{negotiation.error}</p>
-          <p className="text-xs mt-1 opacity-60">Make sure the backend is running: cd backend && uvicorn server:app --port 8000</p>
+          <p className="text-xs mt-1 opacity-60">Make sure the backend is running: cd backend && source venv/bin/activate && uvicorn server:app --host 0.0.0.0 --port 8081</p>
         </div>
       )}
 
