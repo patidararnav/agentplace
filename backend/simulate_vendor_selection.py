@@ -136,7 +136,6 @@ async def run_simulation(
             "service": cfg["customer"]["service"],
             "budget": cfg["customer"]["budget"],
             "urgency": cfg["customer"]["urgency"],
-            "customer_aggression": cfg["customer"]["aggression"],
             "vendors": [v["name"] for v in cfg["vendors"]],
             "max_rounds": cfg["max_rounds"],
         }
@@ -170,8 +169,11 @@ async def run_simulation(
         service=cust["service"],
         budget=cust["budget"],
         urgency=cust["urgency"],
-        aggression=cust["aggression"],
         notes=cust["notes"],
+        timezone_name="UTC",
+        duration_minutes=60,
+        availability_windows=[],
+        time_price_preference="balanced",
         orchestrator_address=orchestrator.address,
         startup_delay=cfg["startup_delay"],
         result_sink=result,
@@ -229,7 +231,6 @@ def display_results(result: Dict[str, Any]) -> None:
     print(f"  Service:    {cfg.get('service', '?')}")
     print(f"  Budget:     ${cfg.get('budget', '?')}")
     print(f"  Urgency:    {cfg.get('urgency', '?')}/5")
-    print(f"  Aggression: {cfg.get('customer_aggression', '?')}/5")
     print(f"  Vendors:    {', '.join(cfg.get('vendors', []))}")
     print(f"  Max rounds: {cfg.get('max_rounds', '?')}")
     print("-" * 64)

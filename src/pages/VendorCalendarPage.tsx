@@ -1,10 +1,10 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, ArrowLeft, Wrench, Clock, DollarSign } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ArrowLeft, Wrench, Clock, DollarSign, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { useApp } from '@/context/AppContext';
-import { fetchJobsForVendor } from '@/lib/supabase-data';
+import { deleteJob, fetchJobsForVendor } from '@/lib/supabase-data';
 import type { JobData, PlannedJob } from '@/types';
 import { cn, getStatusColorClasses, getStatusTextColorClass } from '@/lib/utils';
 
@@ -46,12 +46,14 @@ function formatTime(iso: string) {
 
 export function VendorCalendarPage() {
   const navigate = useNavigate();
-  const { selectedVendor } = useApp();
+  const { selectedVendor, refetchCustomers, refetchVendors, refetchJobs } = useApp();
   const [calendarJobs, setCalendarJobs] = useState<JobData[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [viewDate, setViewDate] = useState(new Date());
   const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<JobData | null>(null);
+  const [deletingJobId, setDeletingJobId] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState('');
 
   const jobsByDate = useMemo(() => {
     const map: Record<string, JobData[]> = {};
@@ -117,6 +119,23 @@ export function VendorCalendarPage() {
     }
   }
 
+  async function handleDeleteJob(job: JobData) {
+    if (!window.confirm(`Delete this event for ${job.consumer_name}?`)) return;
+    setDeleteError('');
+    setDeletingJobId(job.job_id);
+    const result = await deleteJob(job.job_id);
+    setDeletingJobId(null);
+
+    if ('error' in result) {
+      setDeleteError(result.error);
+      return;
+    }
+
+    setCalendarJobs((prev) => prev.filter((j) => j.job_id !== job.job_id));
+    setSelectedJob((prev) => (prev?.job_id === job.job_id ? null : prev));
+    await Promise.allSettled([refetchCustomers(), refetchVendors(), refetchJobs()]);
+  }
+
   if (!selectedVendor) {
     return (
       <div className="min-h-svh bg-background flex flex-col">
@@ -164,6 +183,11 @@ export function VendorCalendarPage() {
 
       <main className="flex-1 overflow-auto p-6">
         <div className="max-w-3xl mx-auto space-y-6">
+          {deleteError && (
+            <div className="rounded-lg bg-destructive/10 text-destructive text-sm px-4 py-2">
+              {deleteError}
+            </div>
+          )}
           <div className="flex items-center justify-between">
             <Button variant="ghost" size="icon" onClick={() => setViewDate(new Date(year, month - 1))}>
               <ChevronLeft className="h-5 w-5" />
@@ -274,6 +298,15 @@ export function VendorCalendarPage() {
                     }}
                   >
                     Track job &amp; update status
+                  </Button>
+                  <Button
+                    className="w-full gap-2"
+                    variant="destructive"
+                    disabled={deletingJobId != null}
+                    onClick={() => handleDeleteJob(selectedJob)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {deletingJobId === selectedJob.job_id ? 'Deleting…' : 'Delete event'}
                   </Button>
                 </CardContent>
               </Card>

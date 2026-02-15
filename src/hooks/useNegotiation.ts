@@ -37,6 +37,9 @@ export interface VendorResultEvent {
   outcome: string;
   price: number;
   rounds: number;
+  start_iso?: string;
+  end_iso?: string;
+  utility?: number;
   text: string;
 }
 
@@ -112,7 +115,43 @@ export interface NegotiationState {
   error: string | null;
 }
 
+interface NegotiationCacheEntry {
+  requestKey: string;
+  sessionId: string;
+  status: 'running' | 'done';
+  state: NegotiationState;
+  updatedAt: number;
+}
+
+const negotiationCache = new Map<string, NegotiationCacheEntry>();
+const pendingSessionStarts = new Map<string, Promise<string>>();
+
 let logCounter = 0;
+
+function createInitialState(): NegotiationState {
+  return {
+    stepStatuses: {
+      concierge: 'pending',
+      matching: 'pending',
+      negotiation: 'pending',
+      ranking: 'pending',
+    },
+    logs: [],
+    vendors: {},
+    vendorResults: [],
+    outcome: null,
+    isComplete: false,
+    isConnecting: true,
+    error: null,
+  };
+}
+
+function makeRequestKey(params: NegotiateParams): string {
+  const token = params.request_token?.trim();
+  if (token) return token;
+  // Backward-compatible fallback for callers that do not provide request_token.
+  return JSON.stringify(params);
+}
 
 function makeLogEntry(agent: string, text: string, eventType: string): LogEntry {
   return {
@@ -130,43 +169,83 @@ function makeLogEntry(agent: string, text: string, eventType: string): LogEntry 
 }
 
 export function useNegotiation(params: NegotiateParams | null) {
-  const [state, setState] = useState<NegotiationState>({
-    stepStatuses: {
-      concierge: 'pending',
-      matching: 'pending',
-      negotiation: 'pending',
-      ranking: 'pending',
-    },
-    logs: [],
-    vendors: {},
-    vendorResults: [],
-    outcome: null,
-    isComplete: false,
-    isConnecting: true,
-    error: null,
-  });
+  const [state, setState] = useState<NegotiationState>(createInitialState);
 
   const wsRef = useRef<WebSocket | null>(null);
   const sessionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!params) return;
+    const requestKey = makeRequestKey(params);
+    const cached = negotiationCache.get(requestKey);
+
+    // If this request already completed, reuse the cached state and avoid rerunning agents.
+    if (cached?.status === 'done') {
+      sessionIdRef.current = cached.sessionId;
+      setState(cached.state);
+      return;
+    }
+
+    if (cached?.state) {
+      sessionIdRef.current = cached.sessionId;
+      setState(cached.state);
+    } else {
+      setState(createInitialState());
+    }
 
     let cancelled = false;
 
+    const updateCache = (sessionId: string, nextState: NegotiationState) => {
+      negotiationCache.set(requestKey, {
+        requestKey,
+        sessionId,
+        status: nextState.isComplete ? 'done' : 'running',
+        state: nextState,
+        updatedAt: Date.now(),
+      });
+    };
+
+    const getOrCreateSessionId = async (): Promise<string> => {
+      const existing = negotiationCache.get(requestKey);
+      if (existing?.sessionId) return existing.sessionId;
+
+      const pending = pendingSessionStarts.get(requestKey);
+      if (pending) return pending;
+
+      const pendingStart = startNegotiation(params)
+        .then(({ session_id }) => {
+          const current = negotiationCache.get(requestKey);
+          negotiationCache.set(requestKey, {
+            requestKey,
+            sessionId: session_id,
+            status: current?.status ?? 'running',
+            state: current?.state ?? createInitialState(),
+            updatedAt: Date.now(),
+          });
+          return session_id;
+        })
+        .finally(() => {
+          pendingSessionStarts.delete(requestKey);
+        });
+
+      pendingSessionStarts.set(requestKey, pendingStart);
+      return pendingStart;
+    };
+
     async function start() {
       try {
-        // 1. Start the negotiation via HTTP
-        const { session_id } = await startNegotiation(params!);
+        // 1. Resolve an existing session for this request (or create one once).
+        const session_id = await getOrCreateSessionId();
         if (cancelled) return;
         sessionIdRef.current = session_id;
 
         setState((prev) => ({
+          ...createInitialState(),
           ...prev,
           isConnecting: false,
           logs: [
             ...prev.logs,
-            makeLogEntry('system', `Session started: ${session_id.slice(0, 8)}`, 'system'),
+            makeLogEntry('system', `Session ready: ${session_id.slice(0, 8)}`, 'system'),
           ],
         }));
 
@@ -256,10 +335,12 @@ export function useNegotiation(params: NegotiateParams | null) {
                 };
 
                 // Short log entry for negotiation
-                const label = e.role === 'customer-agent' ? 'Customer' : (e.vendor_name || 'Vendor');
+                const isCustomer = e.role === 'customer-agent';
+                const label = isCustomer ? 'Customer' : (e.vendor_name || 'Vendor');
+                const amountLabel = isCustomer ? 'counter' : 'offer';
                 next.logs = [
                   ...prev.logs,
-                  makeLogEntry(label, `$${e.price}: ${e.text.slice(0, 100)}`, 'negotiation'),
+                  makeLogEntry(label, `${amountLabel} $${e.price}: ${e.text.slice(0, 100)}`, 'negotiation'),
                 ];
                 break;
               }
@@ -363,17 +444,22 @@ export function useNegotiation(params: NegotiateParams | null) {
               }
             }
 
+            updateCache(session_id, next);
             return next;
           });
         };
 
         ws.onerror = () => {
           if (!cancelled) {
-            setState((prev) => ({
-              ...prev,
-              error: 'WebSocket connection error. Is the backend running?',
-              isConnecting: false,
-            }));
+            setState((prev) => {
+              const next = {
+                ...prev,
+                error: 'WebSocket connection error. Is the backend running?',
+                isConnecting: false,
+              };
+              updateCache(session_id, next);
+              return next;
+            });
           }
         };
 
@@ -386,7 +472,7 @@ export function useNegotiation(params: NegotiateParams | null) {
               // WebSocket closed before done event — synthesize completion
               // from whatever vendor results we already have.
               const hasResults = prev.vendorResults.length > 0;
-              return {
+              const next: NegotiationState = {
                 ...prev,
                 isComplete: true,
                 outcome: prev.outcome ?? {
@@ -407,17 +493,24 @@ export function useNegotiation(params: NegotiateParams | null) {
                   ranking: 'done',
                 },
               };
+              updateCache(session_id, next);
+              return next;
             });
           }
         };
       } catch (err: unknown) {
         if (!cancelled) {
           const msg = err instanceof Error ? err.message : 'Failed to connect';
-          setState((prev) => ({
-            ...prev,
-            error: msg,
-            isConnecting: false,
-          }));
+          setState((prev) => {
+            const next = {
+              ...prev,
+              error: msg,
+              isConnecting: false,
+            };
+            const sid = sessionIdRef.current;
+            if (sid) updateCache(sid, next);
+            return next;
+          });
         }
       }
     }

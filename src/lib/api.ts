@@ -4,11 +4,24 @@
  * In development, Vite proxies /api and /ws to the FastAPI server.
  */
 
+export interface AvailabilityWindow {
+  start_iso: string;
+  end_iso: string;
+  priority: number;
+  hard_constraint: boolean;
+}
+
 export interface NegotiateParams {
+  /** Stable token for this specific user submit action (prevents accidental reruns on remount/back nav). */
+  request_token?: string;
   service: string;
   budget: number;
   urgency: number;
-  aggression: number;
+  timezone: string;
+  duration_minutes: number;
+  availability_windows: AvailabilityWindow[];
+  time_price_preference: 'time_first' | 'balanced' | 'price_first';
+  latest_acceptable_start_iso: string;
   notes: string;
   /** Customer name for DB job linkage; sent to backend when starting negotiation */
   consumer_name?: string;

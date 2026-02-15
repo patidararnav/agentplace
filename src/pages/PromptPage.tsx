@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ArrowRight, Sparkles, Wrench, Calendar, Info } from 'lucide-react';
+import { ArrowRight, Sparkles, Wrench, Calendar, Info, Trash2 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -18,7 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { insertCustomer } from '@/lib/supabase-data';
+import { deleteCustomer, insertCustomer } from '@/lib/supabase-data';
 import { fetchAvgPrice } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -29,6 +29,27 @@ const SUGGESTIONS = [
   'Paint my living room walls — neutral tones',
 ];
 const SLOT_LABELS = ['8a', '9a', '10a', '11a', '12p', '1p', '2p', '3p', '4p', '5p', '6p', '7p'];
+const SLOT_TO_HHMM: Record<string, string> = {
+  '8a': '08:00',
+  '9a': '09:00',
+  '10a': '10:00',
+  '11a': '11:00',
+  '12p': '12:00',
+  '1p': '13:00',
+  '2p': '14:00',
+  '3p': '15:00',
+  '4p': '16:00',
+  '5p': '17:00',
+  '6p': '18:00',
+  '7p': '19:00',
+};
+
+function makeRequestToken(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 function nextWeekDays(): Date[] {
   const start = new Date();
@@ -44,20 +65,32 @@ function dateKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function formatAvailabilityForNotes(selected: Set<string>): string {
-  if (selected.size === 0) return 'No availability provided.';
+function buildAvailabilityWindows(selected: Set<string>) {
+  const rows = [...selected]
+    .map((key) => {
+      const [day, slot] = key.split('|');
+      const hhmm = SLOT_TO_HHMM[slot];
+      if (!day || !hhmm) return null;
+      const start = `${day}T${hhmm}:00`;
+      const [hh, mm] = hhmm.split(':').map((v) => Number(v));
+      const endDate = new Date(`${day}T${hhmm}:00`);
+      endDate.setHours(hh + 1, mm, 0, 0);
+      const end = `${day}T${String(endDate.getHours()).padStart(2, '0')}:${String(endDate.getMinutes()).padStart(2, '0')}:00`;
+      return { start_iso: start, end_iso: end };
+    })
+    .filter((v): v is { start_iso: string; end_iso: string } => v != null)
+    .sort((a, b) => a.start_iso.localeCompare(b.start_iso));
 
-  const grouped: Record<string, string[]> = {};
-  const sorted = [...selected].sort();
-  for (const key of sorted) {
-    const [day, slot] = key.split('|');
-    if (!grouped[day]) grouped[day] = [];
-    grouped[day].push(slot);
-  }
-
-  return Object.entries(grouped)
-    .map(([day, slots]) => `${day}: ${slots.join(', ')}`)
-    .join('\n');
+  const total = rows.length;
+  return rows.map((row, idx) => {
+    const bucket = Math.floor((idx / Math.max(1, total)) * 5);
+    const priority = Math.max(1, Math.min(5, 5 - bucket));
+    return {
+      ...row,
+      priority,
+      hard_constraint: true,
+    };
+  });
 }
 
 function inferServiceFromPrompt(prompt: string, fallback = ''): string {
@@ -70,6 +103,26 @@ function inferServiceFromPrompt(prompt: string, fallback = ''): string {
   else if (lower.includes('plumb') || lower.includes('leak') || lower.includes('faucet') || lower.includes('pipe') || lower.includes('drain') || lower.includes('sink')) service = 'plumbing';
   else if (lower.includes('fan') || lower.includes('install')) service = 'electrical';
   return service;
+}
+
+function extractExplicitBudgetFromPrompt(prompt: string): number | null {
+  const text = String(prompt || '');
+
+  // Prefer explicit currency mentions such as "$50" or "$1,250".
+  const currency = text.match(/\$\s*([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)/);
+  if (currency?.[1]) {
+    const n = Number(currency[1].replace(/,/g, ''));
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+
+  // Fallback for phrases like "budget is 50" / "max 50".
+  const budgetPhrase = text.match(/\b(?:budget|max(?:imum)?|cap)\s*(?:is|of|at|=|:)?\s*\$?\s*([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)\b/i);
+  if (budgetPhrase?.[1]) {
+    const n = Number(budgetPhrase[1].replace(/,/g, ''));
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+
+  return null;
 }
 
 
@@ -94,11 +147,22 @@ export function PromptPage() {
   const [customerSearch, setCustomerSearch] = useState('');
   const [newCustomerName, setNewCustomerName] = useState('');
   const [creatingCustomer, setCreatingCustomer] = useState(false);
+  const [deletingCustomerName, setDeletingCustomerName] = useState<string | null>(null);
   const [customerError, setCustomerError] = useState('');
   const navigate = useNavigate();
   const location = useLocation();
   const promptSelectCustomer = (location.state as { promptSelectCustomer?: boolean } | null)?.promptSelectCustomer ?? false;
-  const { setLastPrompt, customers, selectedCustomer, setSelectedCustomer, refetchCustomers, dataError, setNegotiateParams } = useApp();
+  const {
+    setLastPrompt,
+    customers,
+    selectedCustomer,
+    setSelectedCustomer,
+    refetchCustomers,
+    refetchVendors,
+    refetchJobs,
+    dataError,
+    setNegotiateParams,
+  } = useApp();
   const weekDays = nextWeekDays();
 
   useEffect(() => {
@@ -248,9 +312,18 @@ export function PromptPage() {
     const dayPrefix = `${dateKey(day)}|`;
     setSelectedAvailability((prev) => {
       const next = new Set(prev);
-      SLOT_LABELS.forEach((slotLabel) => {
-        next.add(`${dayPrefix}${slotLabel}`);
-      });
+      const allSelected = SLOT_LABELS.every((slotLabel) =>
+        next.has(`${dayPrefix}${slotLabel}`)
+      );
+      if (allSelected) {
+        SLOT_LABELS.forEach((slotLabel) => {
+          next.delete(`${dayPrefix}${slotLabel}`);
+        });
+      } else {
+        SLOT_LABELS.forEach((slotLabel) => {
+          next.add(`${dayPrefix}${slotLabel}`);
+        });
+      }
       return next;
     });
   };
@@ -266,17 +339,43 @@ export function PromptPage() {
 
     const inferredService = inferServiceFromPrompt(trimmed, '');
     const service = inferredService || trimmed;
-    const budget = budgetStr ? parseInt(budgetStr, 10) : (avgPrice?.avg_price || 200);
+    const typedBudget = budgetStr ? Number.parseInt(budgetStr, 10) : Number.NaN;
+    const promptBudget = extractExplicitBudgetFromPrompt(trimmed);
+    const budget = Number.isFinite(typedBudget) && typedBudget > 0
+      ? typedBudget
+      : (promptBudget ?? avgPrice?.avg_price ?? 200);
+    const urgencyInt = parseInt(urgency, 10);
+
+    const slotsToUse =
+      selectedAvailability.size > 0
+        ? selectedAvailability
+        : new Set(
+            weekDays.flatMap((day) =>
+              SLOT_LABELS.map((slotLabel) => `${dateKey(day)}|${slotLabel}`)
+            )
+          );
+    const availabilityWindows = buildAvailabilityWindows(slotsToUse);
+    const latestAcceptable = availabilityWindows.length
+      ? availabilityWindows[availabilityWindows.length - 1].start_iso
+      : '';
+    const timezone =
+      Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const timePricePreference: 'time_first' | 'balanced' | 'price_first' =
+      urgencyInt >= 4 ? 'time_first' : urgencyInt <= 2 ? 'price_first' : 'balanced';
 
     setLastPrompt(trimmed);
-    const availabilityNote = formatAvailabilityForNotes(selectedAvailability);
 
     setNegotiateParams({
+      request_token: makeRequestToken(),
       service,
       budget,
-      urgency: parseInt(urgency, 10),
-      aggression: 3,
-      notes: `${trimmed}\n\nCUSTOMER_AVAILABILITY_NEXT_7_DAYS:\n${availabilityNote}`,
+      urgency: urgencyInt,
+      timezone,
+      duration_minutes: 60,
+      availability_windows: availabilityWindows,
+      time_price_preference: timePricePreference,
+      latest_acceptable_start_iso: latestAcceptable,
+      notes: trimmed,
       consumer_name: selectedCustomer?.consumer_name ?? '',
     });
 
@@ -314,6 +413,22 @@ export function PromptPage() {
     } else {
       setCustomerError(result.error);
     }
+  };
+
+  const handleDeleteCustomer = async (name: string) => {
+    if (!window.confirm(`Delete customer "${name}" and all of their scheduled events?`)) return;
+    setCustomerError('');
+    setDeletingCustomerName(name);
+    const result = await deleteCustomer(name);
+    setDeletingCustomerName(null);
+    if ('error' in result) {
+      setCustomerError(result.error);
+      return;
+    }
+    if (selectedCustomer?.consumer_name === name) {
+      setSelectedCustomer(null);
+    }
+    await Promise.allSettled([refetchCustomers(), refetchVendors(), refetchJobs()]);
   };
 
   return (
@@ -676,25 +791,37 @@ export function PromptPage() {
             ) : sortedCustomers.length === 0 ? null : (
             <div className="max-h-[200px] overflow-auto space-y-1">
               {sortedCustomers.slice(0, 50).map((c) => (
-                <button
-                  key={c.consumer_name}
-                  type="button"
-                  onClick={() => {
-                    setSelectedCustomer(c);
-                    setCustomerOpen(false);
-                  }}
-                  className={cn(
-                    'w-full text-left px-3 py-2 rounded-lg text-sm transition-colors',
-                    selectedCustomer?.consumer_name === c.consumer_name
-                      ? 'bg-primary/15 text-primary font-medium'
-                      : 'hover:bg-muted'
-                  )}
-                >
-                  {c.consumer_name}
-                  {c.job_count > 0 && (
-                    <span className="text-muted-foreground ml-2">({c.job_count} jobs)</span>
-                  )}
-                </button>
+                <div key={c.consumer_name} className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedCustomer(c);
+                      setCustomerOpen(false);
+                    }}
+                    className={cn(
+                      'flex-1 text-left px-3 py-2 rounded-lg text-sm transition-colors',
+                      selectedCustomer?.consumer_name === c.consumer_name
+                        ? 'bg-primary/15 text-primary font-medium'
+                        : 'hover:bg-muted'
+                    )}
+                  >
+                    {c.consumer_name}
+                    {c.job_count > 0 && (
+                      <span className="text-muted-foreground ml-2">({c.job_count} jobs)</span>
+                    )}
+                  </button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-destructive hover:text-destructive"
+                    disabled={deletingCustomerName != null}
+                    onClick={() => handleDeleteCustomer(c.consumer_name)}
+                    aria-label={`Delete ${c.consumer_name}`}
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
               ))}
             </div>
             )}

@@ -189,7 +189,7 @@ def create_vendor(
         home_location_lng: Home location longitude.
         experience_years: Years of experience.
         negotiation_aggression: Aggression level 1-5 (1=flexible, 5=firm).
-        pricing_strategy: maximize_jobs | high_value_only | yield_optimizer.
+        pricing_strategy: 1/2/3 or maximize_jobs/high_value_only/yield_optimizer.
     """
     sb = get_supabase()
     # Generate next vendor_id
@@ -202,6 +202,17 @@ def create_vendor(
     )
     next_id = ((existing.data[0]["vendor_id"] if existing.data else 0) + 1)
 
+    strategy_token = str(pricing_strategy or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if strategy_token in {"2", "high_value_only", "high_value_jobs_only", "aggressive"}:
+        strategy_code = 2
+        normalized_strategy = "high_value_only"
+    elif strategy_token in {"3", "yield_optimizer", "yield_optimization"}:
+        strategy_code = 3
+        normalized_strategy = "yield_optimizer"
+    else:
+        strategy_code = 1
+        normalized_strategy = "maximize_jobs"
+
     row = {
         "vendor_id": next_id,
         "name": name,
@@ -211,7 +222,8 @@ def create_vendor(
         "home_location": {"lat": home_location_lat, "lng": home_location_lng},
         "experience_years": experience_years,
         "negotiation_aggression": negotiation_aggression,
-        "pricing_strategy": pricing_strategy,
+        "pricing_strategy": normalized_strategy,
+        "strategy": strategy_code,
         "job_ids": [],
         "reviews": [],
         "average_rating": None,

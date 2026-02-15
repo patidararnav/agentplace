@@ -11,10 +11,11 @@ Run standalone:  python orchestrator.py   (reads config from .env)
 
 import asyncio
 import json
+import math
 import os
 import re
-from urllib.parse import unquote
-from datetime import datetime, timezone
+from urllib.parse import quote, unquote
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
 
@@ -254,7 +255,7 @@ async def check_convergence(
 
 
 def parse_request_text(text: str, fields: Dict[str, str]) -> Dict[str, Any]:
-    """Extract service/budget/urgency/notes from a customer request message."""
+    """Extract service/budget/urgency/notes + structured scheduling fields."""
     service = fields.get("SERVICE", "").strip().lower()
     budget_s = fields.get("BUDGET", "")
     budget = int(budget_s) if budget_s.isdigit() else max(1, extract_price(text))
@@ -268,12 +269,153 @@ def parse_request_text(text: str, fields: Dict[str, str]) -> Dict[str, Any]:
         except Exception:
             # Keep existing notes fallback if decoding fails.
             pass
+
+    timezone_name = fields.get("TIMEZONE", "UTC").strip() or "UTC"
+    duration_s = fields.get("DURATION_MINUTES", "")
+    duration_minutes = int(duration_s) if duration_s.isdigit() else 60
+    duration_minutes = max(30, min(480, duration_minutes))
+
+    pref = (
+        fields.get("TIME_PRICE_PREFERENCE", "balanced")
+        .strip()
+        .lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+    )
+    if pref not in {"time_first", "balanced", "price_first"}:
+        pref = "balanced"
+
+    availability_windows = _parse_availability_windows(
+        fields.get("AVAILABILITY_WINDOWS_JSON", "")
+    )
+    if not availability_windows:
+        availability_windows = _default_availability_windows_next_7_days()
+
+    latest_iso = fields.get("LATEST_ACCEPTABLE_START_ISO", "").strip()
     return {
         "service": service,
         "budget": budget if budget > 0 else 200,
         "urgency": max(1, min(5, urgency)),
         "notes": notes,
+        "timezone": timezone_name,
+        "duration_minutes": duration_minutes,
+        "availability_windows": availability_windows,
+        "time_price_preference": pref,
+        "latest_acceptable_start_iso": latest_iso,
     }
+
+
+def _parse_iso_datetime(raw: str) -> Optional[datetime]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _normalize_offer_iso(dt: datetime) -> str:
+    return dt.isoformat(timespec="minutes")
+
+
+def _default_availability_windows_next_7_days() -> List[Dict[str, Any]]:
+    now = datetime.now()
+    out: List[Dict[str, Any]] = []
+    for i in range(7):
+        day = now.date()
+        day_dt = datetime(day.year, day.month, day.day, 8, 0, 0) + timedelta(days=i)
+        end_dt = day_dt.replace(hour=20, minute=0)
+        out.append({
+            "start_iso": _normalize_offer_iso(day_dt),
+            "end_iso": _normalize_offer_iso(end_dt),
+            "priority": 1,
+            "hard_constraint": False,
+        })
+    return out
+
+
+def _parse_availability_windows(raw: str) -> List[Dict[str, Any]]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        start_iso = str(item.get("start_iso") or "").strip()
+        end_iso = str(item.get("end_iso") or "").strip()
+        start_dt = _parse_iso_datetime(start_iso)
+        end_dt = _parse_iso_datetime(end_iso)
+        if start_dt is None or end_dt is None or end_dt <= start_dt:
+            continue
+        try:
+            priority = int(item.get("priority") or 1)
+        except (TypeError, ValueError):
+            priority = 1
+        hard_constraint = bool(item.get("hard_constraint", False))
+        out.append({
+            "start_iso": _normalize_offer_iso(start_dt),
+            "end_iso": _normalize_offer_iso(end_dt),
+            "priority": max(1, min(5, priority)),
+            "hard_constraint": hard_constraint,
+        })
+
+    out.sort(key=lambda w: (-int(w.get("priority", 1)), str(w.get("start_iso", ""))))
+    return out
+
+
+def _urgency_norm(urgency: int) -> float:
+    return max(0.0, min(1.0, (int(urgency) - 1) / 4.0))
+
+
+def _days_ahead(start_iso: str) -> float:
+    dt = _parse_iso_datetime(start_iso)
+    if dt is None:
+        return 0.0
+    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+    return max(0.0, min(7.0, (dt - now).total_seconds() / 86400.0))
+
+
+def _customer_utility_score(
+    *,
+    budget: int,
+    urgency: int,
+    price: int,
+    start_iso: str,
+    time_price_preference: str,
+    priority: int = 1,
+) -> float:
+    b = max(1, int(budget))
+    p = max(0, int(price))
+    u = _urgency_norm(urgency)
+    d = _days_ahead(start_iso)
+
+    price_score = max(-1.0, min(1.0, 1.0 - (p / float(b))))
+    horizon = max(3.0, 7.0 - 4.0 * u)
+    time_score = math.exp(-d / horizon)
+
+    w_time = 0.2 + 0.6 * u
+    w_price = 0.8 - 0.6 * u
+
+    pref = str(time_price_preference or "balanced").strip().lower()
+    if pref == "time_first":
+        w_time += 0.15
+    elif pref == "price_first":
+        w_price += 0.15
+    total = max(1e-6, w_time + w_price)
+    w_time /= total
+    w_price /= total
+
+    pr = max(1, min(5, int(priority or 1)))
+    priority_bonus = (pr - 1) * 0.02
+    return (w_price * price_score) + (w_time * time_score) + priority_bonus
 
 
 # ─── Availability helpers ────────────────────────────────────────────────
@@ -408,6 +550,150 @@ def _minutes_to_hhmm(total: int) -> str:
 
 def _format_ranges(ranges: List[tuple[int, int]]) -> List[str]:
     return [f"{_minutes_to_hhmm(start)}-{_minutes_to_hhmm(end)}" for start, end in ranges]
+
+
+def _ranges_total_minutes(ranges: List[tuple[int, int]]) -> int:
+    return sum(max(0, end - start) for start, end in ranges)
+
+
+def _is_interval_within_any_range(start: int, end: int, ranges: List[tuple[int, int]]) -> bool:
+    return any(start >= r_start and end <= r_end for r_start, r_end in ranges)
+
+
+def _slot_candidate_id(start_iso: str, end_iso: str) -> str:
+    return f"{start_iso}|{end_iso}"
+
+
+def build_vendor_slot_candidates(
+    *,
+    availability_windows: List[Dict[str, Any]],
+    vendor_availability: Dict[str, Any],
+    vendor_id: int,
+    duration_minutes: int,
+    latest_acceptable_start_iso: str = "",
+    max_candidates: int = 24,
+) -> List[Dict[str, Any]]:
+    """Build concrete feasible slot candidates for a vendor."""
+    if duration_minutes <= 0:
+        duration_minutes = 60
+    latest_dt = _parse_iso_datetime(latest_acceptable_start_iso)
+
+    parsed_windows: List[Dict[str, Any]] = []
+    wanted_dates: List[str] = []
+    for window in availability_windows:
+        start_iso = str(window.get("start_iso") or "")
+        end_iso = str(window.get("end_iso") or "")
+        start_dt = _parse_iso_datetime(start_iso)
+        end_dt = _parse_iso_datetime(end_iso)
+        if start_dt is None or end_dt is None or end_dt <= start_dt:
+            continue
+        parsed_windows.append({
+            "start_dt": start_dt,
+            "end_dt": end_dt,
+            "priority": max(1, min(5, int(window.get("priority") or 1))),
+            "hard_constraint": bool(window.get("hard_constraint", False)),
+        })
+        wanted_dates.append(start_dt.date().isoformat())
+
+    if not parsed_windows:
+        return []
+
+    unique_dates = sorted(set(wanted_dates))
+    busy_by_date, _ = _load_vendor_busy_ranges(vendor_id, unique_dates)
+
+    out: List[Dict[str, Any]] = []
+    seen_ids: Set[str] = set()
+
+    for window in parsed_windows:
+        start_dt = window["start_dt"]
+        end_dt = window["end_dt"]
+        priority = int(window["priority"])
+        hard_constraint = bool(window["hard_constraint"])
+        date_str = start_dt.date().isoformat()
+        day_name = start_dt.strftime("%A")
+
+        vendor_slots = _vendor_slots_for_day(vendor_availability, day_name)
+        has_vendor_schedule = bool(vendor_availability)
+        if has_vendor_schedule:
+            slot_ranges = _slot_ranges_minutes(vendor_slots)
+            if not slot_ranges:
+                continue
+        else:
+            slot_ranges = [(0, 24 * 60)]
+
+        busy_ranges = busy_by_date.get(date_str, [])
+        available_minutes = _ranges_total_minutes(slot_ranges)
+        booked_minutes = _ranges_total_minutes(busy_ranges)
+        load_ratio = (
+            min(1.5, max(0.0, booked_minutes / max(1, available_minutes)))
+            if available_minutes > 0
+            else 0.0
+        )
+
+        cursor = start_dt.replace(second=0, microsecond=0)
+        step = timedelta(minutes=60)
+        duration = timedelta(minutes=duration_minutes)
+        while cursor + duration <= end_dt:
+            if latest_dt is not None and cursor > latest_dt:
+                break
+
+            slot_start_min = (cursor.hour * 60) + cursor.minute
+            slot_end_min = slot_start_min + duration_minutes
+            within_schedule = _is_interval_within_any_range(
+                slot_start_min,
+                slot_end_min,
+                slot_ranges,
+            )
+            conflicts_existing = any(
+                _ranges_overlap(slot_start_min, slot_end_min, b_start, b_end)
+                for b_start, b_end in busy_ranges
+            )
+            if within_schedule and not conflicts_existing:
+                start_iso = _normalize_offer_iso(cursor)
+                end_iso = _normalize_offer_iso(cursor + duration)
+                sid = _slot_candidate_id(start_iso, end_iso)
+                if sid not in seen_ids:
+                    seen_ids.add(sid)
+                    out.append({
+                        "slot_id": sid,
+                        "start_iso": start_iso,
+                        "end_iso": end_iso,
+                        "priority": priority,
+                        "hard_constraint": hard_constraint,
+                        "days_ahead": _days_ahead(start_iso),
+                        "load_ratio": round(load_ratio, 4),
+                    })
+            cursor += step
+
+    out.sort(key=lambda c: (-int(c.get("priority", 1)), str(c.get("start_iso", ""))))
+    if len(out) <= max_candidates:
+        return out
+
+    # Keep schedule options distributed across dates so later/cheaper slots are
+    # still represented when we cap payload size.
+    selected: List[Dict[str, Any]] = []
+    selected_ids: Set[str] = set()
+    seen_dates: Set[str] = set()
+
+    for cand in out:
+        date_key = str(cand.get("start_iso", ""))[:10]
+        if date_key and date_key not in seen_dates:
+            sid = str(cand.get("slot_id", ""))
+            selected.append(cand)
+            selected_ids.add(sid)
+            seen_dates.add(date_key)
+            if len(selected) >= max_candidates:
+                return selected
+
+    for cand in out:
+        sid = str(cand.get("slot_id", ""))
+        if sid in selected_ids:
+            continue
+        selected.append(cand)
+        selected_ids.add(sid)
+        if len(selected) >= max_candidates:
+            break
+    return selected
 
 
 def _load_vendor_busy_ranges(
@@ -612,6 +898,9 @@ def create_orchestrator_agent(
     service, price, rounds) invoked when a deal closes, e.g. to write to Supabase.
     """
 
+    # Keep round budget deterministic across all sessions.
+    max_rounds = 8
+
     kwargs: Dict[str, Any] = {"name": "orchestrator", "seed": seed}
     if port is not None:
         kwargs["port"] = port
@@ -659,8 +948,15 @@ def create_orchestrator_agent(
             vs = ensure_vendor_state(req, va)
             vn = vendor_registry.get(va, {}).get("name", va)
             if vs["outcome"] == "deal":
-                deals.append({"name": vn, "address": va,
-                              "price": vs["deal_price"], "rounds": vs["rounds"]})
+                deals.append({
+                    "name": vn,
+                    "address": va,
+                    "price": vs["deal_price"],
+                    "rounds": vs["rounds"],
+                    "start_iso": vs.get("deal_start_iso", ""),
+                    "end_iso": vs.get("deal_end_iso", ""),
+                    "utility": float(vs.get("deal_utility") or 0.0),
+                })
             else:
                 failed.append({"name": vn, "address": va,
                                "outcome": vs["outcome"] or "unknown", "rounds": vs["rounds"]})
@@ -670,23 +966,38 @@ def create_orchestrator_agent(
                 _terminated_msg(rid, "All vendor negotiations ended with no agreement.")))
             return
 
-        deals.sort(key=lambda d: d["price"])
+        deals.sort(key=lambda d: (-float(d.get("utility") or 0.0), d["price"]))
         winner = deals[0]
         lines = [f"CONSENSUS: {len(deals)} deal(s), {len(failed)} failed."]
         for i, d in enumerate(deals, 1):
             tag = " << SELECTED" if i == 1 else ""
-            lines.append(f"  {i}. {d['name']}  ${d['price']}  ({d['rounds']} rounds){tag}")
+            lines.append(
+                f"  {i}. {d['name']}  ${d['price']}  ({d['rounds']} rounds)"
+                f"  util={float(d.get('utility') or 0.0):.3f}{tag}"
+            )
         for d in failed:
             lines.append(f"  X. {d['name']}  {d['outcome']}  ({d['rounds']} rounds)")
-        lines.append(f"Best deal: {winner['name']} at ${winner['price']}.")
+        lines.append(
+            f"Best deal: {winner['name']} at ${winner['price']}"
+            + (f" on {winner['start_iso']}." if winner.get("start_iso") else ".")
+        )
 
         await ctx.send(req["customer"], make_chat_message("\n".join([
             "TYPE=deal_closed", f"RID={rid}",
             f"WINNER={winner['name']}", f"WINNER_PRICE={winner['price']}",
+            f"WINNER_START_ISO={winner.get('start_iso', '')}",
+            f"WINNER_END_ISO={winner.get('end_iso', '')}",
             f"TEXT={chr(10).join(lines)}",
         ])))
         await ctx.send(winner["address"], make_chat_message(
-            f"TYPE=deal_closed\nRID={rid}\nTEXT=You won the bid at ${winner['price']}."))
+            "\n".join([
+                "TYPE=deal_closed",
+                f"RID={rid}",
+                f"PRICE={winner['price']}",
+                f"START_ISO={winner.get('start_iso', '')}",
+                f"END_ISO={winner.get('end_iso', '')}",
+                f"TEXT=You won the bid at ${winner['price']}.",
+            ])))
         for d in deals[1:]:
             await ctx.send(d["address"], make_chat_message(
                 f"TYPE=terminated\nRID={rid}\nTEXT=Another vendor was selected at ${winner['price']}."))
@@ -805,7 +1116,7 @@ def create_orchestrator_agent(
                 weekly_avail = json.loads(avail_raw) if avail_raw else {}
             except (json.JSONDecodeError, TypeError):
                 weekly_avail = {}
-            vendor_registry[va] = {
+            new_vendor = {
                 "name": fields.get("NAME", "Vendor"),
                 "vendor_id": vendor_id,
                 "services": services_from_csv(fields.get("SERVICES", "")),
@@ -814,16 +1125,43 @@ def create_orchestrator_agent(
                 "sender": sender,
                 "weekly_availability": weekly_avail,
             }
-            ctx.logger.info("Registered vendor %s  vendor_id=%s  address=%s  services=%s",
-                            fields.get("NAME", "Vendor"),
-                            vendor_id,
-                            va,
-                            vendor_registry[va]["services"])
-            _push_event({
-                "type": "log",
-                "agent": "orchestrator",
-                "text": f"Registered vendor {fields.get('NAME', 'Vendor')}  services={vendor_registry[va]['services']}",
-            })
+            previous = vendor_registry.get(va)
+            vendor_registry[va] = new_vendor
+            if previous is None:
+                ctx.logger.info(
+                    "Registered vendor %s  vendor_id=%s  address=%s  services=%s",
+                    new_vendor["name"],
+                    vendor_id,
+                    va,
+                    new_vendor["services"],
+                )
+                _push_event({
+                    "type": "log",
+                    "agent": "orchestrator",
+                    "text": f"Registered vendor {new_vendor['name']}  services={new_vendor['services']}",
+                })
+            else:
+                changed = (
+                    previous.get("name") != new_vendor.get("name")
+                    or previous.get("vendor_id") != new_vendor.get("vendor_id")
+                    or previous.get("services") != new_vendor.get("services")
+                    or previous.get("pricing_strategy") != new_vendor.get("pricing_strategy")
+                    or previous.get("weekly_availability") != new_vendor.get("weekly_availability")
+                )
+                if changed:
+                    ctx.logger.info(
+                        "Updated vendor %s  vendor_id=%s  address=%s  services=%s",
+                        new_vendor["name"],
+                        vendor_id,
+                        va,
+                        new_vendor["services"],
+                    )
+                else:
+                    ctx.logger.debug(
+                        "Vendor heartbeat  vendor=%s  address=%s",
+                        new_vendor["name"],
+                        va,
+                    )
             return
 
         # ── new service request ──
@@ -841,14 +1179,15 @@ def create_orchestrator_agent(
                 await ctx.send(sender, make_chat_message(_terminated_msg(rid, err_text)))
                 return
             ctx.logger.info(
-                "REQUEST_IN  rid=%s  sender=%s  service=%s  budget=$%s  urgency=%s  notes_len=%d  has_availability_header=%s",
+                "REQUEST_IN  rid=%s  sender=%s  service=%s  budget=$%s  urgency=%s  notes_len=%d  windows=%d  duration=%d",
                 rid,
                 sender,
                 data["service"],
                 data["budget"],
                 data["urgency"],
                 len(notes_text),
-                "CUSTOMER_AVAILABILITY_NEXT_7_DAYS" in notes_text,
+                len(data.get("availability_windows", [])),
+                int(data.get("duration_minutes", 60)),
             )
             try:
                 matched, selector_source = await selector_agent.select(
@@ -880,78 +1219,43 @@ def create_orchestrator_agent(
                 sorted(matched_names),
             )
 
-            # ── Cross-check customer availability with vendor schedules ──
-            customer_avail = parse_customer_availability(data.get("notes", ""))
-            selected_slot_count = sum(len(hours) for hours in customer_avail.values())
+            # ── Build concrete vendor slot candidates from structured windows ──
+            availability_windows = data.get("availability_windows", [])
+            selected_slot_count = len(availability_windows)
             ctx.logger.info(
-                "CUSTOMER_AVAILABILITY_PARSED  rid=%s  slot_count=%d  dates=%s",
+                "CUSTOMER_WINDOWS_PARSED  rid=%s  windows=%d  duration_minutes=%d",
                 rid,
                 selected_slot_count,
-                sorted(customer_avail.keys()),
+                int(data.get("duration_minutes", 60)),
             )
-            if not customer_avail and "CUSTOMER_AVAILABILITY_NEXT_7_DAYS" in (data.get("notes") or ""):
-                ctx.logger.warning(
-                    "CUSTOMER_AVAILABILITY_PARSE_EMPTY  rid=%s  notes contained availability header but parsed no slots",
-                    rid,
-                )
+
             available_vendors: Set[str] = set()
             unavailable_vendors: Set[str] = set()
+            candidate_slots_by_vendor: Dict[str, List[Dict[str, Any]]] = {}
 
-            if customer_avail:
-                for va in matched:
-                    vendor_avail = vendor_registry.get(va, {}).get(
-                        "weekly_availability", {}
-                    )
-                    vendor_id = int(vendor_registry.get(va, {}).get("vendor_id") or 0)
-                    vendor_name = vendor_registry.get(va, {}).get("name", va)
-                    is_available, diagnostics = evaluate_vendor_availability(
-                        customer_avail,
-                        vendor_avail,
-                        vendor_id=vendor_id,
-                    )
-                    if diagnostics.get("busy_load_error"):
-                        ctx.logger.warning(
-                            "SCHEDULE_FILTER_BUSY_LOAD_ERROR  rid=%s  vendor=%s  vendor_id=%s  error=%s",
-                            rid,
-                            vendor_name,
-                            vendor_id,
-                            diagnostics.get("busy_load_error"),
-                        )
-                    date_checks = diagnostics.get("date_checks", [])
-                    slot_checks = sum(
-                        len(d.get("slot_checks", []))
-                        for d in date_checks
-                        if isinstance(d, dict)
-                    )
-                    ctx.logger.info(
-                        "SCHEDULE_FILTER  rid=%s  vendor=%s  vendor_id=%s  available=%s  decision=%s  checked_dates=%d  checked_slots=%d  matched=%s@%s",
-                        rid,
-                        vendor_name,
-                        vendor_id,
-                        is_available,
-                        diagnostics.get("decision"),
-                        len(date_checks),
-                        slot_checks,
-                        diagnostics.get("matched_date", "-"),
-                        diagnostics.get("matched_hour", "-"),
-                    )
-                    ctx.logger.debug(
-                        "SCHEDULE_FILTER_DIAGNOSTICS  rid=%s  vendor=%s  diagnostics=%s",
-                        rid,
-                        vendor_name,
-                        json.dumps(diagnostics, sort_keys=True),
-                    )
-                    if is_available:
-                        available_vendors.add(va)
-                    else:
-                        unavailable_vendors.add(va)
-            else:
-                # Customer didn't specify availability → all pass
-                available_vendors = set(matched)
+            for va in matched:
+                vendor_avail = vendor_registry.get(va, {}).get("weekly_availability", {})
+                vendor_id = int(vendor_registry.get(va, {}).get("vendor_id") or 0)
+                vendor_name = vendor_registry.get(va, {}).get("name", va)
+                candidates = build_vendor_slot_candidates(
+                    availability_windows=availability_windows,
+                    vendor_availability=vendor_avail,
+                    vendor_id=vendor_id,
+                    duration_minutes=int(data.get("duration_minutes", 60)),
+                    latest_acceptable_start_iso=str(data.get("latest_acceptable_start_iso", "")),
+                )
+                if candidates:
+                    available_vendors.add(va)
+                    candidate_slots_by_vendor[va] = candidates
+                else:
+                    unavailable_vendors.add(va)
+
                 ctx.logger.info(
-                    "SCHEDULE_FILTER_SKIPPED  rid=%s  reason=no_customer_slots  vendors=%s",
+                    "SLOT_CANDIDATES  rid=%s  vendor=%s  vendor_id=%s  count=%d",
                     rid,
-                    sorted(vendor_registry.get(va, {}).get("name", va) for va in matched),
+                    vendor_name,
+                    vendor_id,
+                    len(candidates),
                 )
 
             # Include ALL matched vendors in the request (for counting)
@@ -1041,12 +1345,29 @@ def create_orchestrator_agent(
                     vendor_name,
                     pricing_key,
                 )
+                windows_json = json.dumps(
+                    data.get("availability_windows", []),
+                    separators=(",", ":"),
+                )
+                candidate_json = json.dumps(
+                    candidate_slots_by_vendor.get(va, []),
+                    separators=(",", ":"),
+                )
+                notes_urlenc = quote(data.get("notes", "") or "", safe="")
                 await ctx.send(va, make_chat_message("\n".join([
                     "TYPE=request", f"RID={rid}",
-                    f"SERVICE={data['service']}", f"BUDGET={data['budget']}",
-                    f"URGENCY={data['urgency']}", f"NOTES={data['notes']}",
+                    f"SERVICE={data['service']}",
                     f"PRICING_KEY={pricing_key}",
-                    "TEXT=Please send your opening offer in natural language and include a price.",
+                    f"BUDGET={data['budget']}",
+                    f"URGENCY={data['urgency']}",
+                    f"DURATION_MINUTES={data.get('duration_minutes', 60)}",
+                    f"TIMEZONE={data.get('timezone', 'UTC')}",
+                    f"TIME_PRICE_PREFERENCE={data.get('time_price_preference', 'balanced')}",
+                    f"LATEST_ACCEPTABLE_START_ISO={data.get('latest_acceptable_start_iso', '')}",
+                    f"AVAILABILITY_WINDOWS_JSON={windows_json}",
+                    f"CANDIDATE_SLOTS_JSON={candidate_json}",
+                    f"NOTES_URLENC={notes_urlenc}",
+                    "TEXT=Please send structured slot+price offers.",
                 ])))
             return
 
@@ -1083,6 +1404,244 @@ def create_orchestrator_agent(
                         _terminated_msg(rid, "All vendors unavailable or inactive.")))
             return
 
+        # ── vendor structured slot+price offer ──
+        if mt == "vendor_offer":
+            va = fields.get("VENDOR", sender)
+            if va not in req["vendors"]:
+                return
+            vs = ensure_vendor_state(req, va)
+            if not vs["active"]:
+                return
+
+            price = int(fields["PRICE"]) if fields.get("PRICE", "").isdigit() else extract_price(text)
+            offer_id = fields.get("OFFER_ID", "")
+            start_iso = fields.get("START_ISO", "")
+            end_iso = fields.get("END_ISO", "")
+            offers_json = fields.get("OFFERS_JSON", "[]")
+
+            vs["latest_vendor_price"] = price
+            vs["latest_vendor_offer_id"] = offer_id
+            vs["latest_vendor_start_iso"] = start_iso
+            vs["latest_vendor_end_iso"] = end_iso
+            vs["rounds"] += 1
+            if price > 0:
+                vs["recent_vendor_prices"].append(price)
+                vs["recent_vendor_prices"] = vs["recent_vendor_prices"][-5:]
+
+            vn = vendor_registry.get(va, {}).get("name", "Vendor")
+            mt_text = fields.get("TEXT", text)
+            vs["transcript"].append(f"Vendor: {mt_text}")
+            vs["transcript"] = vs["transcript"][-20:]
+            ctx.logger.info(
+                "RID=%s [Round %s] %s → $%s @ %s: %s",
+                rid,
+                vs["rounds"],
+                vn,
+                price,
+                start_iso or "-",
+                mt_text,
+            )
+            _push_event({
+                "type": "log",
+                "agent": "orchestrator",
+                "text": f"RID={rid} [Round {vs['rounds']}] {vn} → ${price} @ {start_iso or '-'}: {mt_text}",
+            })
+            await ctx.send(req["customer"], make_chat_message("\n".join([
+                "TYPE=vendor_offer",
+                f"RID={rid}",
+                f"VENDOR={va}",
+                f"VENDOR_NAME={vn}",
+                f"OFFER_ID={offer_id}",
+                f"PRICE={price}",
+                f"START_ISO={start_iso}",
+                f"END_ISO={end_iso}",
+                f"OFFERS_JSON={offers_json}",
+                f"TEXT={vn}: {mt_text}",
+            ])))
+            return
+
+        # ── customer structured counter / accept / terminate ──
+        if mt == "customer_counter":
+            va = fields.get("VENDOR", "")
+            if va not in req["vendors"]:
+                return
+            vs = ensure_vendor_state(req, va)
+            if not vs["active"]:
+                return
+
+            action = fields.get("ACTION", "counter").strip().lower()
+            if action not in {"counter", "accept", "terminate"}:
+                action = "counter"
+
+            price = int(fields["PRICE"]) if fields.get("PRICE", "").isdigit() else extract_price(text)
+            start_iso = fields.get("START_ISO", "") or str(vs.get("latest_vendor_start_iso") or "")
+            end_iso = fields.get("END_ISO", "") or str(vs.get("latest_vendor_end_iso") or "")
+            offer_id = fields.get("OFFER_ID", "") or str(vs.get("latest_vendor_offer_id") or "")
+            mt_text = fields.get("TEXT", text)
+            vn = vendor_registry.get(va, {}).get("name", va)
+            v_id = int(vendor_registry.get(va, {}).get("vendor_id") or 0)
+            utility_raw = fields.get("UTILITY", "")
+            try:
+                utility = float(utility_raw) if utility_raw else 0.0
+            except ValueError:
+                utility = 0.0
+
+            if action == "accept":
+                deal_price = price if price > 0 else int(vs.get("latest_vendor_price") or 0)
+                if deal_price <= 0:
+                    deal_price = max(1, int(req.get("budget", 200)))
+                if utility == 0.0:
+                    utility = _customer_utility_score(
+                        budget=int(req.get("budget", 200)),
+                        urgency=int(req.get("urgency", 3)),
+                        price=deal_price,
+                        start_iso=start_iso,
+                        time_price_preference=str(req.get("time_price_preference", "balanced")),
+                        priority=1,
+                    )
+
+                vs["active"] = False
+                vs["outcome"] = "deal"
+                vs["deal_price"] = deal_price
+                vs["deal_start_iso"] = start_iso
+                vs["deal_end_iso"] = end_iso
+                vs["deal_utility"] = utility
+
+                if consensus_mode:
+                    await ctx.send(req["customer"], make_chat_message("\n".join([
+                        "TYPE=vendor_result",
+                        f"RID={rid}",
+                        f"VENDOR={va}",
+                        f"VENDOR_ID={v_id}",
+                        f"VENDOR_NAME={vn}",
+                        "OUTCOME=deal",
+                        f"PRICE={deal_price}",
+                        f"ROUNDS={vs['rounds']}",
+                        f"START_ISO={start_iso}",
+                        f"END_ISO={end_iso}",
+                        f"UTILITY={utility:.6f}",
+                        f"TEXT=Deal with {vn} at ${deal_price}"
+                        + (f" for {start_iso}." if start_iso else "."),
+                    ])))
+                    await ctx.send(va, make_chat_message("\n".join([
+                        "TYPE=deal_closed",
+                        f"RID={rid}",
+                        f"PRICE={deal_price}",
+                        f"START_ISO={start_iso}",
+                        f"END_ISO={end_iso}",
+                        f"TEXT=Customer accepted at ${deal_price}.",
+                    ])))
+                    ctx.logger.info(
+                        "VENDOR DEAL  rid=%s  vendor=%s  price=$%s  start=%s  utility=%.3f",
+                        rid,
+                        vn,
+                        deal_price,
+                        start_iso or "-",
+                        utility,
+                    )
+                    await _check_all_resolved(ctx, rid, req)
+                else:
+                    req["closed"] = True
+                    for v in req["vendors"]:
+                        ensure_vendor_state(req, v)["active"] = False
+                    await ctx.send(req["customer"], make_chat_message(
+                        _deal_msg(
+                            rid,
+                            f"Deal closed with {vn} at ${deal_price}."
+                            + (f" Time: {start_iso}." if start_iso else ""),
+                        ),
+                    ))
+                    await ctx.send(va, make_chat_message("\n".join([
+                        "TYPE=deal_closed",
+                        f"RID={rid}",
+                        f"PRICE={deal_price}",
+                        f"START_ISO={start_iso}",
+                        f"END_ISO={end_iso}",
+                        f"TEXT=Confirmed at ${deal_price}.",
+                    ])))
+                return
+
+            if action == "terminate":
+                vs["active"] = False
+                vs["outcome"] = "terminated"
+                if consensus_mode:
+                    await ctx.send(req["customer"], make_chat_message("\n".join([
+                        "TYPE=vendor_result",
+                        f"RID={rid}",
+                        f"VENDOR={va}",
+                        f"VENDOR_ID={v_id}",
+                        f"VENDOR_NAME={vn}",
+                        "OUTCOME=terminated",
+                        "PRICE=0",
+                        f"ROUNDS={vs['rounds']}",
+                        "UTILITY=0",
+                        f"TEXT=Negotiation with {vn} terminated by customer.",
+                    ])))
+                    await ctx.send(va, make_chat_message(
+                        f"TYPE=terminated\nRID={rid}\nTEXT=Customer ended negotiation."
+                    ))
+                    await _check_all_resolved(ctx, rid, req)
+                else:
+                    await ctx.send(req["customer"], make_chat_message(
+                        _terminated_msg(rid, f"Negotiation with {vn} terminated.")))
+                return
+
+            # action == counter
+            if vs["rounds"] >= max_rounds:
+                vs["active"] = False
+                vs["outcome"] = "terminated"
+                await ctx.send(req["customer"], make_chat_message("\n".join([
+                    "TYPE=vendor_result",
+                    f"RID={rid}",
+                    f"VENDOR={va}",
+                    f"VENDOR_ID={v_id}",
+                    f"VENDOR_NAME={vn}",
+                    "OUTCOME=terminated",
+                    "PRICE=0",
+                    f"ROUNDS={vs['rounds']}",
+                    "UTILITY=0",
+                    f"TEXT=Negotiation with {vn} reached max rounds.",
+                ])))
+                await ctx.send(va, make_chat_message(
+                    f"TYPE=terminated\nRID={rid}\nTEXT=Max rounds reached."
+                ))
+                await _check_all_resolved(ctx, rid, req)
+                return
+
+            vs["latest_customer_price"] = price
+            if price > 0:
+                vs["recent_customer_prices"].append(price)
+                vs["recent_customer_prices"] = vs["recent_customer_prices"][-5:]
+            vs["transcript"].append(f"Customer: {mt_text}")
+            vs["transcript"] = vs["transcript"][-20:]
+            ctx.logger.info(
+                "RID=%s [Round %s] Customer → %s @ $%s (%s): %s",
+                rid,
+                vs["rounds"],
+                vn,
+                price,
+                start_iso or "-",
+                mt_text,
+            )
+            _push_event({
+                "type": "log",
+                "agent": "orchestrator",
+                "text": f"RID={rid} [Round {vs['rounds']}] Customer → {vn} @ ${price} ({start_iso or '-'})",
+            })
+            await ctx.send(va, make_chat_message("\n".join([
+                "TYPE=customer_counter",
+                f"RID={rid}",
+                f"VENDOR={va}",
+                f"ACTION=counter",
+                f"OFFER_ID={offer_id}",
+                f"PRICE={price}",
+                f"START_ISO={start_iso}",
+                f"END_ISO={end_iso}",
+                f"TIME_PRICE_PREFERENCE={req.get('time_price_preference', 'balanced')}",
+                f"TEXT={mt_text}",
+            ])))
+            return
+
         # ── vendor quote / counter ──
         if mt == "vendor_message":
             va = fields.get("VENDOR", sender)
@@ -1101,11 +1660,11 @@ def create_orchestrator_agent(
             mt_text = fields.get("TEXT", text)
             vs["transcript"].append(f"Vendor: {mt_text}")
             vs["transcript"] = vs["transcript"][-20:]
-            ctx.logger.info("[Round %s] %s → $%s: %s", vs["rounds"], vn, price, mt_text)
+            ctx.logger.info("RID=%s [Round %s] %s → $%s: %s", rid, vs["rounds"], vn, price, mt_text)
             _push_event({
                 "type": "log",
                 "agent": "orchestrator",
-                "text": f"[Round {vs['rounds']}] {vn} → ${price}: {mt_text}",
+                "text": f"RID={rid} [Round {vs['rounds']}] {vn} → ${price}: {mt_text}",
             })
             await ctx.send(req["customer"], make_chat_message("\n".join([
                 "TYPE=vendor_message", f"RID={rid}", f"VENDOR={va}",
@@ -1131,12 +1690,12 @@ def create_orchestrator_agent(
             vs["transcript"].append(f"Customer: {mt_text}")
             vs["transcript"] = vs["transcript"][-20:]
             vn = vendor_registry.get(va, {}).get("name", va)
-            ctx.logger.info("[Round %s] Customer → %s @ $%s: %s",
-                            vs["rounds"], vn, price, mt_text)
+            ctx.logger.info("RID=%s [Round %s] Customer → %s @ $%s: %s",
+                            rid, vs["rounds"], vn, price, mt_text)
             _push_event({
                 "type": "log",
                 "agent": "orchestrator",
-                "text": f"[Round {vs['rounds']}] Customer → {vn} @ ${price}: {mt_text}",
+                "text": f"RID={rid} [Round {vs['rounds']}] Customer → {vn} @ ${price}: {mt_text}",
             })
             await ctx.send(va, make_chat_message("\n".join([
                 "TYPE=customer_message", f"RID={rid}", f"VENDOR={va}",

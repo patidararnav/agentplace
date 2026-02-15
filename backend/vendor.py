@@ -11,11 +11,13 @@ Run standalone:  python vendor.py   (reads config from .env)
 """
 
 import json
+import math
 import os
 import random
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
+from urllib.parse import unquote
 
 from uagents import Agent, Context, Protocol
 from uagents_core.contrib.protocols.chat import (
@@ -59,12 +61,15 @@ PRICING_STRATEGY_YIELD_OPTIMIZER = "yield_optimizer"
 DEFAULT_PRICING_STRATEGY = PRICING_STRATEGY_MAXIMIZE_JOBS
 
 _PRICING_STRATEGY_ALIASES = {
+    "1": PRICING_STRATEGY_MAXIMIZE_JOBS,
     "maximize_jobs": PRICING_STRATEGY_MAXIMIZE_JOBS,
     "maximize_number_of_jobs": PRICING_STRATEGY_MAXIMIZE_JOBS,
     "max_jobs": PRICING_STRATEGY_MAXIMIZE_JOBS,
+    "2": PRICING_STRATEGY_HIGH_VALUE_ONLY,
     "high_value_only": PRICING_STRATEGY_HIGH_VALUE_ONLY,
     "high_value_jobs_only": PRICING_STRATEGY_HIGH_VALUE_ONLY,
     "aggressive": PRICING_STRATEGY_HIGH_VALUE_ONLY,
+    "3": PRICING_STRATEGY_YIELD_OPTIMIZER,
     "yield_optimizer": PRICING_STRATEGY_YIELD_OPTIMIZER,
     "yield_optimization": PRICING_STRATEGY_YIELD_OPTIMIZER,
 }
@@ -373,6 +378,231 @@ def _compute_yield_discount(
     return _yield_discount_from_free_ratio(best_free_ratio), best_free_ratio
 
 
+def _parse_iso_datetime(raw: str) -> Optional[datetime]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _days_ahead(start_iso: str) -> float:
+    dt = _parse_iso_datetime(start_iso)
+    if dt is None:
+        return 0.0
+    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+    return max(0.0, min(7.0, (dt - now).total_seconds() / 86400.0))
+
+
+def _offer_id(start_iso: str, end_iso: str) -> str:
+    return f"{start_iso}|{end_iso}"
+
+
+def _parse_candidate_slots(raw: str) -> List[Dict[str, Any]]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        start_iso = str(item.get("start_iso") or "").strip()
+        end_iso = str(item.get("end_iso") or "").strip()
+        start_dt = _parse_iso_datetime(start_iso)
+        end_dt = _parse_iso_datetime(end_iso)
+        if start_dt is None or end_dt is None or end_dt <= start_dt:
+            continue
+        try:
+            priority = int(item.get("priority") or 1)
+        except (TypeError, ValueError):
+            priority = 1
+        try:
+            load_ratio = float(item.get("load_ratio") or 0.0)
+        except (TypeError, ValueError):
+            load_ratio = 0.0
+        try:
+            days = float(item.get("days_ahead") or _days_ahead(start_iso))
+        except (TypeError, ValueError):
+            days = _days_ahead(start_iso)
+
+        out.append({
+            "slot_id": str(item.get("slot_id") or _offer_id(start_iso, end_iso)),
+            "start_iso": start_iso,
+            "end_iso": end_iso,
+            "priority": max(1, min(5, priority)),
+            "hard_constraint": bool(item.get("hard_constraint", False)),
+            "load_ratio": max(0.0, min(1.5, load_ratio)),
+            "days_ahead": max(0.0, min(7.0, days)),
+        })
+    return out
+
+
+def _slot_opening_price(
+    *,
+    base_prices: Dict[str, int],
+    aggression: int,
+    service: str,
+    urgency: int,
+    strategy: str,
+    days_ahead: float,
+    load_ratio: float,
+) -> int:
+    # Base opening curve from existing strategy logic.
+    opening = vendor_opening_price(
+        base_prices,
+        aggression,
+        service,
+        urgency,
+        strategy=strategy,
+        yield_discount=0.0,
+    )
+    floor = vendor_floor_price(
+        base_prices,
+        aggression,
+        service,
+        urgency,
+        strategy=strategy,
+        yield_discount=0.0,
+    )
+
+    u = max(0.0, min(1.0, (urgency - 1) / 4.0))
+    d = max(0.0, min(7.0, float(days_ahead)))
+    load = max(0.0, min(1.5, float(load_ratio)))
+
+    # Near-term urgent work carries a premium; low-urgency future slots discount.
+    lead_factor = 1.0 + (0.20 * u * math.exp(-d / 2.0)) - (0.12 * (1.0 - u) * (d / 7.0))
+    occupancy_factor = 0.82 + (0.50 * min(1.0, load))
+    if strategy == PRICING_STRATEGY_YIELD_OPTIMIZER:
+        occupancy_factor -= 0.08 * max(0.0, 1.0 - min(1.0, load))
+    factor = max(0.65, lead_factor * occupancy_factor)
+    return max(floor, int(opening * factor))
+
+
+def _slot_revised_price(
+    *,
+    aggression: int,
+    current_price: int,
+    customer_price: int,
+    floor_price: int,
+    strategy: str,
+    days_ahead: float,
+    urgency: int,
+) -> int:
+    revised = vendor_revised_price(
+        aggression,
+        current_price,
+        customer_price,
+        floor_price,
+        strategy=strategy,
+        yield_discount=0.0,
+    )
+    u = max(0.0, min(1.0, (urgency - 1) / 4.0))
+    d = max(0.0, min(7.0, float(days_ahead)))
+    premium = 1.0 + (0.04 * max(0.0, u - 0.5) * math.exp(-d / 2.0))
+    revised = max(floor_price, int(revised * premium))
+    if customer_price >= floor_price and customer_price >= int(revised * 0.98):
+        return max(floor_price, customer_price)
+    return revised
+
+
+def _rank_offers_for_strategy(strategy: str, offers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if strategy == PRICING_STRATEGY_HIGH_VALUE_ONLY:
+        return sorted(
+            offers,
+            key=lambda o: (-int(o.get("price", 0)), -int(o.get("priority", 1))),
+        )
+    if strategy == PRICING_STRATEGY_YIELD_OPTIMIZER:
+        return sorted(
+            offers,
+            key=lambda o: (float(o.get("load_ratio", 0.0)), int(o.get("price", 0))),
+        )
+    return sorted(
+        offers,
+        key=lambda o: (int(o.get("price", 0)), -int(o.get("priority", 1))),
+    )
+
+
+def _diverse_shortlist_for_negotiation(
+    *,
+    strategy: str,
+    offers: List[Dict[str, Any]],
+    max_items: int = 3,
+) -> List[Dict[str, Any]]:
+    if not offers:
+        return []
+
+    ranked = _rank_offers_for_strategy(strategy, offers)
+    if len(ranked) <= max_items:
+        return ranked
+
+    earliest = min(ranked, key=lambda o: str(o.get("start_iso", "")))
+    latest = max(ranked, key=lambda o: str(o.get("start_iso", "")))
+    preferred = ranked[0]
+
+    picked: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+
+    def _add(offer: Dict[str, Any]) -> None:
+        oid = str(offer.get("offer_id", ""))
+        if oid in seen:
+            return
+        seen.add(oid)
+        picked.append(offer)
+
+    # Always include a strategy-best quote plus near/far time alternatives.
+    _add(preferred)
+    _add(earliest)
+    _add(latest)
+
+    for offer in ranked:
+        if len(picked) >= max_items:
+            break
+        _add(offer)
+
+    return picked[:max_items]
+
+
+_SENSITIVE_VENDOR_PATTERNS = [
+    re.compile(
+        r"\b(min(?:imum)?|lowest|floor|final|best)\s+(?:price|offer)\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(can(?:not|'t)\s+go\s+lower|won't\s+go\s+lower)\b",
+        flags=re.IGNORECASE,
+    ),
+]
+
+
+def _slot_phrase(start_iso: str, end_iso: str) -> str:
+    start = str(start_iso or "").strip()
+    end = str(end_iso or "").strip()
+    if start and end:
+        return f"{start} to {end}"
+    if start:
+        return start
+    return "the proposed time slot"
+
+
+def _contains_sensitive_vendor_disclosure(text: str) -> bool:
+    t = str(text or "")
+    return any(p.search(t) for p in _SENSITIVE_VENDOR_PATTERNS)
+
+
+def _sanitize_vendor_utterance(text: str, fallback: str) -> str:
+    t = str(text or "").strip()
+    if not t or _contains_sensitive_vendor_disclosure(t) or "$" not in t:
+        return fallback
+    return t
+
+
 # ─── Agent Factory ───────────────────────────────────────────────────────
 
 
@@ -445,31 +675,47 @@ def create_vendor_agent(
         f"Your negotiation style is {aggression}/5 (1 = very flexible, 5 = very firm). "
         f"Your pricing strategy is '{strategy}'. "
         "Write brief, natural responses (1-3 sentences). You MUST mention the exact dollar "
-        "amount given to you. Do NOT include any KEY=VALUE lines — write like a real person."
+        "amount given to you. Keep pricing thresholds private: never reveal minimum/floor/final/best "
+        "offer language. Mention the agreed time slot in your response. "
+        "Do NOT include any KEY=VALUE lines — write like a real person."
     )
 
-    async def _opening_text(svc: str, offer: int) -> str:
-        return await generate_text(
+    async def _opening_text(svc: str, offer: int, start_iso: str, end_iso: str) -> str:
+        when = _slot_phrase(start_iso, end_iso)
+        fallback = f"I can handle the {svc} job at ${offer} for {when}."
+        raw = await generate_text(
             sys_prompt,
-            f"Write a friendly opening quote for a {svc} job at ${offer}. "
-            "Mention what you bring to the table briefly.",
-            f"I can handle the {svc} job and my opening offer is ${offer}.",
+            f"Write a friendly opening quote for a {svc} job at ${offer} for {when}. "
+            "Mention what you bring to the table briefly and include the time slot.",
+            fallback,
         )
+        return _sanitize_vendor_utterance(raw, fallback)
 
-    async def _counter_text(offer: int, customer_offer: int) -> str:
+    async def _counter_text(
+        offer: int,
+        customer_offer: int,
+        svc: str,
+        start_iso: str,
+        end_iso: str,
+    ) -> str:
+        when = _slot_phrase(start_iso, end_iso)
         if customer_offer >= offer:
-            return await generate_text(
+            fallback = f"That works. I can do ${offer} for the {svc} job at {when}."
+            raw = await generate_text(
                 sys_prompt,
-                f"The customer offered ${customer_offer} and you accept at ${offer}. "
-                "Write a brief, warm acceptance.",
-                f"Your number works. I can accept ${offer}.",
+                f"The customer offered ${customer_offer} and you accept at ${offer} for {svc} at {when}. "
+                "Write a brief, warm acceptance and include the slot.",
+                fallback,
             )
-        return await generate_text(
+            return _sanitize_vendor_utterance(raw, fallback)
+        fallback = f"I appreciate the counter. I can do ${offer} for the {svc} job at {when}."
+        raw = await generate_text(
             sys_prompt,
-            f"The customer countered at ${customer_offer}. Your revised offer is ${offer}. "
-            "Write a brief, professional counter-offer.",
-            f"I appreciate the counter but I can revise to ${offer}.",
+            f"The customer countered at ${customer_offer}. Your revised offer is ${offer} "
+            f"for {svc} at {when}. Write a brief, professional counter-offer and include the slot.",
+            fallback,
         )
+        return _sanitize_vendor_utterance(raw, fallback)
 
     def _registration_text() -> str:
         lines = [
@@ -522,10 +768,17 @@ def create_vendor_agent(
             if not svc:
                 svc = fields.get("SERVICE", "").strip().lower()
             urg = int(fields.get("URGENCY", "3")) if fields.get("URGENCY", "").isdigit() else 3
+            dur = int(fields.get("DURATION_MINUTES", "60")) if fields.get("DURATION_MINUTES", "").isdigit() else 60
+            if dur <= 0:
+                dur = 60
             notes = fields.get("NOTES", "")
-            # Vendor-side service eligibility is intentionally not enforced here.
-            # Orchestrator already handles LLM intent matching + availability filtering.
-            # We only need a concrete price key for offer calculation.
+            notes_urlenc = fields.get("NOTES_URLENC", "")
+            if notes_urlenc:
+                try:
+                    notes = unquote(notes_urlenc)
+                except Exception:
+                    pass
+
             if not svc:
                 svc = sorted(supported)[0]
             if svc not in base_prices:
@@ -539,39 +792,233 @@ def create_vendor_agent(
                 )
                 svc = fallback_svc
 
-            yield_discount = 0.0
-            free_ratio: Optional[float] = None
-            if strategy == PRICING_STRATEGY_YIELD_OPTIMIZER:
-                yield_discount, free_ratio = _compute_yield_discount(
-                    notes=notes,
-                    weekly_availability=_weekly_availability,
-                    vendor_id=vendor_id,
-                )
-                if yield_discount > 0:
-                    ctx.logger.info(
-                        "Yield optimizer applied for %s  rid=%s  free_ratio=%.2f  discount=%.1f%%",
-                        name,
-                        rid,
-                        free_ratio if free_ratio is not None else 0.0,
-                        yield_discount * 100,
-                    )
+            slots = _parse_candidate_slots(fields.get("CANDIDATE_SLOTS_JSON", ""))
+            if not slots:
+                await ctx.send(sender, make_chat_message("\n".join([
+                    "TYPE=vendor_unavailable",
+                    f"RID={rid}",
+                    f"VENDOR={agent.address}",
+                    "TEXT=No feasible schedule slots were provided.",
+                ])))
+                return
 
+            offers: List[Dict[str, Any]] = []
+            for slot in slots:
+                price = _slot_opening_price(
+                    base_prices=base_prices,
+                    aggression=aggression,
+                    service=svc,
+                    urgency=urg,
+                    strategy=strategy,
+                    days_ahead=float(slot.get("days_ahead") or 0.0),
+                    load_ratio=float(slot.get("load_ratio") or 0.0),
+                )
+                offers.append({
+                    "offer_id": _offer_id(str(slot.get("start_iso", "")), str(slot.get("end_iso", ""))),
+                    "price": price,
+                    "start_iso": str(slot.get("start_iso", "")),
+                    "end_iso": str(slot.get("end_iso", "")),
+                    "priority": int(slot.get("priority", 1)),
+                    "load_ratio": float(slot.get("load_ratio", 0.0)),
+                    "days_ahead": float(slot.get("days_ahead", 0.0)),
+                })
+
+            shortlisted = _diverse_shortlist_for_negotiation(
+                strategy=strategy,
+                offers=offers,
+                max_items=min(3, len(offers)),
+            )
+            selected = shortlisted[0]
+            deal_state[rid] = {
+                "service": svc,
+                "urgency": urg,
+                "duration_minutes": dur,
+                "slots": slots,
+                "last_offer": int(selected["price"]),
+                "last_offer_id": str(selected["offer_id"]),
+                "last_offer_start_iso": str(selected["start_iso"]),
+                "last_offer_end_iso": str(selected["end_iso"]),
+            }
+            body = await _opening_text(
+                svc,
+                int(selected["price"]),
+                str(selected.get("start_iso", "")),
+                str(selected.get("end_iso", "")),
+            )
+            await ctx.send(sender, make_chat_message("\n".join([
+                "TYPE=vendor_offer",
+                f"RID={rid}",
+                f"VENDOR={agent.address}",
+                f"OFFER_ID={selected['offer_id']}",
+                f"PRICE={int(selected['price'])}",
+                f"START_ISO={selected['start_iso']}",
+                f"END_ISO={selected['end_iso']}",
+                f"OFFERS_JSON={json.dumps(shortlisted, separators=(',', ':'))}",
+                f"TEXT={body}",
+            ])))
+            return
+
+        if sender == orchestrator_address and mt == "customer_counter" and rid:
+            st = deal_state.get(rid)
+            if not st:
+                return
+            svc = str(st["service"])
+            urg = int(st["urgency"])
+            cur = int(st["last_offer"])
+            action = fields.get("ACTION", "counter").strip().lower()
+            if action != "counter":
+                return
+
+            cp = int(fields["PRICE"]) if fields.get("PRICE", "").isdigit() else extract_price(text)
+            desired_start = fields.get("START_ISO", "") or str(st.get("last_offer_start_iso") or "")
+            desired_end = fields.get("END_ISO", "") or str(st.get("last_offer_end_iso") or "")
+            desired_id = fields.get("OFFER_ID", "") or _offer_id(desired_start, desired_end)
+
+            slots: List[Dict[str, Any]] = st.get("slots", [])
+            chosen_slot = next(
+                (
+                    s for s in slots
+                    if str(s.get("start_iso")) == desired_start
+                    and str(s.get("end_iso")) == desired_end
+                ),
+                None,
+            )
+            if chosen_slot is None:
+                chosen_slot = next(
+                    (s for s in slots if _offer_id(str(s.get("start_iso", "")), str(s.get("end_iso", ""))) == desired_id),
+                    None,
+                )
+            if chosen_slot is None and slots:
+                chosen_slot = slots[0]
+            if chosen_slot is None:
+                await ctx.send(sender, make_chat_message("\n".join([
+                    "TYPE=vendor_unavailable",
+                    f"RID={rid}",
+                    f"VENDOR={agent.address}",
+                    "TEXT=No feasible slots remain.",
+                ])))
+                return
+
+            slot_start = str(chosen_slot.get("start_iso") or "")
+            slot_end = str(chosen_slot.get("end_iso") or "")
+            days = float(chosen_slot.get("days_ahead") or _days_ahead(slot_start))
+            load_ratio = float(chosen_slot.get("load_ratio") or 0.0)
+
+            floor = vendor_floor_price(
+                base_prices,
+                aggression,
+                svc,
+                urg,
+                strategy=strategy,
+                yield_discount=0.0,
+            )
+            slot_open = _slot_opening_price(
+                base_prices=base_prices,
+                aggression=aggression,
+                service=svc,
+                urgency=urg,
+                strategy=strategy,
+                days_ahead=days,
+                load_ratio=load_ratio,
+            )
+            current_for_slot = max(cur, slot_open)
+            if cp <= 0:
+                cp = max(1, int(current_for_slot * 0.9))
+
+            new = _slot_revised_price(
+                aggression=aggression,
+                current_price=current_for_slot,
+                customer_price=cp,
+                floor_price=floor,
+                strategy=strategy,
+                days_ahead=days,
+                urgency=urg,
+            )
+
+            # Keep one or two alternative offers for context.
+            alt_offers: List[Dict[str, Any]] = []
+            for s in slots:
+                sid = _offer_id(str(s.get("start_iso", "")), str(s.get("end_iso", "")))
+                if sid == _offer_id(slot_start, slot_end):
+                    continue
+                p = _slot_opening_price(
+                    base_prices=base_prices,
+                    aggression=aggression,
+                    service=svc,
+                    urgency=urg,
+                    strategy=strategy,
+                    days_ahead=float(s.get("days_ahead") or _days_ahead(str(s.get("start_iso", "")))),
+                    load_ratio=float(s.get("load_ratio") or 0.0),
+                )
+                alt_offers.append({
+                    "offer_id": sid,
+                    "price": p,
+                    "start_iso": str(s.get("start_iso", "")),
+                    "end_iso": str(s.get("end_iso", "")),
+                    "priority": int(s.get("priority", 1)),
+                    "load_ratio": float(s.get("load_ratio", 0.0)),
+                    "days_ahead": float(s.get("days_ahead", 0.0)),
+                })
+
+            selected_offer = {
+                "offer_id": _offer_id(slot_start, slot_end),
+                "price": int(new),
+                "start_iso": slot_start,
+                "end_iso": slot_end,
+                "priority": int(chosen_slot.get("priority", 1)),
+                "load_ratio": load_ratio,
+                "days_ahead": days,
+            }
+            ranked_alt = _rank_offers_for_strategy(strategy, alt_offers)[:2]
+            outgoing_offers = [selected_offer, *ranked_alt]
+
+            st["last_offer"] = int(new)
+            st["last_offer_id"] = selected_offer["offer_id"]
+            st["last_offer_start_iso"] = slot_start
+            st["last_offer_end_iso"] = slot_end
+
+            body = await _counter_text(int(new), cp, svc, slot_start, slot_end)
+            await ctx.send(sender, make_chat_message("\n".join([
+                "TYPE=vendor_offer",
+                f"RID={rid}",
+                f"VENDOR={agent.address}",
+                f"OFFER_ID={selected_offer['offer_id']}",
+                f"PRICE={int(new)}",
+                f"START_ISO={slot_start}",
+                f"END_ISO={slot_end}",
+                f"OFFERS_JSON={json.dumps(outgoing_offers, separators=(',', ':'))}",
+                f"TEXT={body}",
+            ])))
+            return
+
+        # Legacy fallback (price-only flow)
+        if sender == orchestrator_address and mt == "request" and rid:
+            svc = fields.get("PRICING_KEY", "").strip().lower()
+            if not svc:
+                svc = fields.get("SERVICE", "").strip().lower()
+            urg = int(fields.get("URGENCY", "3")) if fields.get("URGENCY", "").isdigit() else 3
+            if not svc:
+                svc = sorted(supported)[0]
+            if svc not in base_prices:
+                svc = sorted(supported)[0]
             offer = vendor_opening_price(
                 base_prices,
                 aggression,
                 svc,
                 urg,
                 strategy=strategy,
-                yield_discount=yield_discount,
+                yield_discount=0.0,
             )
             deal_state[rid] = {
                 "service": svc,
                 "urgency": urg,
                 "last_offer": offer,
-                "yield_discount": yield_discount,
-                "free_ratio": free_ratio,
+                "last_offer_id": "legacy",
+                "last_offer_start_iso": "",
+                "last_offer_end_iso": "",
+                "slots": [],
             }
-            body = await _opening_text(svc, offer)
+            body = await _opening_text(svc, offer, "", "")
             await ctx.send(sender, make_chat_message("\n".join([
                 "TYPE=vendor_message", f"RID={rid}",
                 f"VENDOR={agent.address}", f"PRICE={offer}", f"TEXT={body}",
@@ -583,7 +1030,6 @@ def create_vendor_agent(
             if not st:
                 return
             svc, urg, cur = str(st["service"]), int(st["urgency"]), int(st["last_offer"])
-            yield_discount = float(st.get("yield_discount") or 0.0)
             cp = int(fields["PRICE"]) if fields.get("PRICE", "").isdigit() else extract_price(text)
             if cp <= 0:
                 cp = max(1, int(cur * 0.9))
@@ -593,7 +1039,7 @@ def create_vendor_agent(
                 svc,
                 urg,
                 strategy=strategy,
-                yield_discount=yield_discount,
+                yield_discount=0.0,
             )
             new = vendor_revised_price(
                 aggression,
@@ -601,10 +1047,10 @@ def create_vendor_agent(
                 cp,
                 floor,
                 strategy=strategy,
-                yield_discount=yield_discount,
+                yield_discount=0.0,
             )
             st["last_offer"] = new
-            body = await _counter_text(new, cp)
+            body = await _counter_text(new, cp, svc, "", "")
             await ctx.send(sender, make_chat_message("\n".join([
                 "TYPE=vendor_message", f"RID={rid}",
                 f"VENDOR={agent.address}", f"PRICE={new}", f"TEXT={body}",
