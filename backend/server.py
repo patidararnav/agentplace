@@ -336,7 +336,11 @@ class NegotiateRequest(BaseModel):
     service: str = Field(..., min_length=1)
     budget: int = 200
     urgency: int = 3
-    aggression: int = 3
+    timezone: str = "UTC"
+    duration_minutes: int = 60
+    availability_windows: list[Dict[str, Any]] = Field(default_factory=list)
+    time_price_preference: str = "balanced"
+    latest_acceptable_start_iso: str = ""
     notes: str = ""
 
 
@@ -357,9 +361,9 @@ async def run_negotiation(
 
     log.info(
         "\033[36m[%s]\033[0m Starting negotiation  service=%s  budget=$%s  "
-        "urgency=%s  aggression=%s  orchestrator=%s",
+        "urgency=%s  windows=%s  orchestrator=%s",
         session_id[:8], params.service, params.budget,
-        params.urgency, params.aggression, _orchestrator_address[:20] + "…",
+        params.urgency, len(params.availability_windows), _orchestrator_address[:20] + "…",
     )
 
     result: Dict[str, Any] = {
@@ -367,7 +371,9 @@ async def run_negotiation(
             "service": params.service,
             "budget": params.budget,
             "urgency": params.urgency,
-            "customer_aggression": params.aggression,
+            "timezone": params.timezone,
+            "duration_minutes": params.duration_minutes,
+            "time_price_preference": params.time_price_preference,
             "vendors": [v["name"] for v in VENDOR_DEFS],
         }
     }
@@ -400,8 +406,12 @@ async def run_negotiation(
         service=params.service.lower(),
         budget=params.budget,
         urgency=params.urgency,
-        aggression=params.aggression,
         notes=params.notes or f"Requesting {params.service} service",
+        timezone_name=params.timezone,
+        duration_minutes=params.duration_minutes,
+        availability_windows=params.availability_windows,
+        time_price_preference=params.time_price_preference,
+        latest_acceptable_start_iso=params.latest_acceptable_start_iso,
         orchestrator_address=_orchestrator_address,
         port=cust_port,
         mailbox=False,          # ephemeral – receives replies on local HTTP

@@ -8,7 +8,6 @@ import {
   MessageSquare,
   AlertCircle,
   ArrowRight,
-  Bot,
   Handshake,
   XCircle,
   Activity,
@@ -45,7 +44,7 @@ const SLOT_TO_TIME: Record<string, { rank: number; hhmm: string }> = {
   '7p': { rank: 11, hhmm: '19:00' },
 };
 
-type WarNodeStatus = 'negotiating' | 'deal' | 'no_deal';
+type WarNodeStatus = 'negotiating' | 'deal' | 'no_deal' | 'no_availability';
 
 interface WarNode {
   id: string;
@@ -85,6 +84,14 @@ const WAR_STATUS_STYLE: Record<
     glow: 'rgba(239, 68, 68, 0.42)',
     line: 'rgba(239, 68, 68, 0.72)',
     badgeClass: 'text-red-300 bg-red-500/15 border-red-400/40',
+  },
+  no_availability: {
+    label: 'No Availability',
+    color: '#94a3b8',
+    border: 'rgba(148, 163, 184, 0.6)',
+    glow: 'rgba(148, 163, 184, 0.25)',
+    line: 'rgba(148, 163, 184, 0.68)',
+    badgeClass: 'text-muted-foreground bg-zinc-500/15 border-zinc-400/35',
   },
 };
 
@@ -159,7 +166,7 @@ function buildQuotes(
       name: d.vendor_name,
       price: d.price,
       originalPrice: origPrice,
-      dateTime: preferredDateTime || new Date(Date.now() + (idx + 2) * 86400000).toISOString(),
+      dateTime: d.start_iso || preferredDateTime || new Date(Date.now() + (idx + 2) * 86400000).toISOString(),
       durationMinutes: 90,
       vendorId: d.vendor_id && d.vendor_id > 0 ? d.vendor_id : idx + 1,
       negotiationMessages: neg.messages,
@@ -286,7 +293,13 @@ export function AgentMatchingPage() {
 
       let status: WarNodeStatus = 'negotiating';
       if (result) {
-        status = result.outcome === 'deal' ? 'deal' : 'no_deal';
+        if (result.outcome === 'deal') {
+          status = 'deal';
+        } else if (result.outcome === 'no_availability') {
+          status = 'no_availability';
+        } else {
+          status = 'no_deal';
+        }
       } else if (negotiation.isComplete) {
         status = 'no_deal';
       }
@@ -309,6 +322,7 @@ export function AgentMatchingPage() {
       negotiating: 0,
       deal: 1,
       no_deal: 2,
+      no_availability: 3,
     };
 
     return nodes.sort((a, b) => {
@@ -334,7 +348,8 @@ export function AgentMatchingPage() {
     const negotiating = warNodes.filter((n) => n.status === 'negotiating').length;
     const deals = warNodes.filter((n) => n.status === 'deal').length;
     const noDeal = warNodes.filter((n) => n.status === 'no_deal').length;
-    return { negotiating, deals, noDeal };
+    const noAvailability = warNodes.filter((n) => n.status === 'no_availability').length;
+    return { negotiating, deals, noDeal, noAvailability };
   }, [warNodes]);
 
   useEffect(() => {
@@ -366,7 +381,7 @@ export function AgentMatchingPage() {
     const el = logScrollRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    shouldAutoScrollRef.current = distanceFromBottom <= 80;
+    shouldAutoScrollRef.current = distanceFromBottom <= 24;
   }, []);
 
   const handleNodeCanvasWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
@@ -384,8 +399,13 @@ export function AgentMatchingPage() {
 
   useEffect(() => {
     const el = logScrollRef.current;
-    if (!el || !shouldAutoScrollRef.current) return;
-    el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (!shouldAutoScrollRef.current) return;
+    requestAnimationFrame(() => {
+      if (el) {
+        el.scrollTop = el.scrollHeight - el.clientHeight;
+      }
+    });
   }, [negotiation.logs.length]);
 
   useEffect(() => {
@@ -456,6 +476,7 @@ export function AgentMatchingPage() {
               </span>
               <span className="px-2.5 py-1 rounded-full border border-orange-400/40 bg-orange-500/10 text-orange-300">Orange: Negotiating</span>
               <span className="px-2.5 py-1 rounded-full border border-emerald-400/40 bg-emerald-500/10 text-emerald-300">Green: Deal Found</span>
+              <span className="px-2.5 py-1 rounded-full border border-zinc-400/35 bg-zinc-500/15 text-zinc-100">Gray: No Availability</span>
               <span className="px-2.5 py-1 rounded-full border border-red-400/40 bg-red-500/10 text-red-300">Red: No Deal</span>
             </div>
           </div>
@@ -509,7 +530,7 @@ export function AgentMatchingPage() {
           <div className="absolute bottom-0 left-[25%] h-72 w-72 rounded-full bg-red-500/9 blur-3xl pointer-events-none" />
 
           <div className="relative z-20 h-full p-4 md:p-6 flex flex-col">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5">
               <div className="rounded-xl border border-border/60 bg-black/45 backdrop-blur-sm px-3 py-2.5">
                 <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Vendor Agents</p>
                 <p className="text-xl font-semibold text-foreground mt-1">{warNodes.length}</p>
@@ -525,6 +546,10 @@ export function AgentMatchingPage() {
               <div className="rounded-xl border border-red-400/35 bg-red-500/10 backdrop-blur-sm px-3 py-2.5">
                 <p className="text-[10px] uppercase tracking-[0.14em] text-red-200/80">No Deal</p>
                 <p className="text-xl font-semibold text-red-100 mt-1">{metrics.noDeal}</p>
+              </div>
+              <div className="rounded-xl border border-zinc-400/35 bg-zinc-500/15 backdrop-blur-sm px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-[0.14em] text-zinc-200/80">No Availability</p>
+                <p className="text-xl font-semibold text-zinc-100 mt-1">{metrics.noAvailability}</p>
               </div>
             </div>
 
@@ -579,7 +604,7 @@ export function AgentMatchingPage() {
                 const pos = nodeLayout[index] ?? { x: 50, y: 50 };
                 const palette = WAR_STATUS_STYLE[node.status];
                 const isFocused = focusedNode?.id === node.id;
-                const NodeIcon = node.status === 'deal' ? Handshake : node.status === 'no_deal' ? XCircle : Bot;
+                    const NodeIcon = node.status === 'deal' ? Handshake : XCircle;
                 const visualScale = (isFocused ? 1.06 : 1) * nodeVisualScale;
 
                 return (

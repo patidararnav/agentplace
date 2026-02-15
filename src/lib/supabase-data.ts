@@ -33,6 +33,160 @@ function isMissingColumnError(message: string, column: string): boolean {
   return lower.includes('column') && lower.includes(column.toLowerCase());
 }
 
+function isMissingRelationError(message: string, code?: string): boolean {
+  return code === '42P01' || /does not exist|relation.*not found/i.test(message || '');
+}
+
+function jobsTableNames(): string[] {
+  const names = [TABLE_JOBS];
+  if (TABLE_JOBS === 'JobsData') names.push('jobs_data');
+  return Array.from(new Set(names));
+}
+
+function computeEndTime(startTime: string, durationMinutes: number): string {
+  const m = startTime.match(/^(\d{2}):(\d{2})$/);
+  if (!m) return '10:00';
+  const hours = Number(m[1]);
+  const minutes = Number(m[2]);
+  if (
+    Number.isNaN(hours) ||
+    Number.isNaN(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return '10:00';
+  }
+  const totalMinutes = hours * 60 + minutes + Math.max(1, durationMinutes);
+  const wrapped = ((totalMinutes % 1440) + 1440) % 1440;
+  const hh = String(Math.floor(wrapped / 60)).padStart(2, '0');
+  const mm = String(wrapped % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+function normalizeDateOrDefault(raw?: string): string {
+  if (raw && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  return new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function normalizeStartTimeOrDefault(raw?: string): string {
+  return raw && /^\d{2}:\d{2}$/.test(raw) ? raw : '09:00';
+}
+
+async function bestEffortLinkJobToVendorAndCustomer(job: JobData): Promise<void> {
+  try {
+    const vendorResult = await supabase
+      .from(TABLE_VENDOR)
+      .select('job_ids')
+      .eq('vendor_id', job.vendor_id)
+      .maybeSingle();
+    if (!vendorResult.error && vendorResult.data) {
+      const existing = Array.isArray(vendorResult.data.job_ids)
+        ? (vendorResult.data.job_ids as number[]).map(Number).filter((id) => Number.isFinite(id))
+        : [];
+      if (!existing.includes(job.job_id)) {
+        const next = [...existing, job.job_id];
+        await supabase.from(TABLE_VENDOR).update({ job_ids: next }).eq('vendor_id', job.vendor_id);
+      }
+    }
+  } catch {
+    // Best-effort only.
+  }
+
+  try {
+    const consumerResult = await supabase
+      .from(TABLE_CONSUMER)
+      .select('job_ids, job_count')
+      .eq('consumer_name', job.consumer_name)
+      .maybeSingle();
+    if (!consumerResult.error && consumerResult.data) {
+      const existing = Array.isArray(consumerResult.data.job_ids)
+        ? (consumerResult.data.job_ids as number[]).map(Number).filter((id) => Number.isFinite(id))
+        : [];
+      const next = existing.includes(job.job_id) ? existing : [...existing, job.job_id];
+      await supabase
+        .from(TABLE_CONSUMER)
+        .update({ job_ids: next, job_count: next.length })
+        .eq('consumer_name', job.consumer_name);
+      return;
+    }
+    await supabase.from(TABLE_CONSUMER).insert({
+      consumer_name: job.consumer_name,
+      job_count: 1,
+      job_ids: [job.job_id],
+    });
+  } catch {
+    // Best-effort only.
+  }
+}
+
+async function createJobDirectlyInSupabase(payload: {
+  vendor_id: number;
+  consumer_name: string;
+  job_type: string;
+  price: number;
+  duration_minutes?: number;
+  date?: string;
+  start_time?: string;
+  status?: number;
+}): Promise<{ data: JobData } | { error: string }> {
+  const vendorId = Number(payload.vendor_id);
+  const consumerName = String(payload.consumer_name ?? '').trim();
+  if (!Number.isFinite(vendorId) || vendorId <= 0) {
+    return { error: 'Invalid vendor_id for accepted quote' };
+  }
+  if (!consumerName) {
+    return { error: 'Missing consumer_name for accepted quote' };
+  }
+
+  const durationMinutes = Math.max(1, Math.round(Number(payload.duration_minutes ?? 60)));
+  const startTime = normalizeStartTimeOrDefault(payload.start_time);
+  const rowBase: Record<string, unknown> = {
+    vendor_id: vendorId,
+    consumer_name: consumerName,
+    type: String(payload.job_type || 'general'),
+    date: normalizeDateOrDefault(payload.date),
+    start_time: startTime,
+    end_time: computeEndTime(startTime, durationMinutes),
+    price: Math.max(0, Math.round(Number(payload.price ?? 0))),
+    duration_minutes: durationMinutes,
+    status: Math.round(Number(payload.status ?? 5)),
+  };
+
+  const tableNames = jobsTableNames();
+  let lastError = 'Failed to create job';
+  for (const tableName of tableNames) {
+    const nextIdResult = await supabase
+      .from(tableName)
+      .select('job_id')
+      .order('job_id', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (nextIdResult.error) {
+      if (isMissingRelationError(nextIdResult.error.message, nextIdResult.error.code)) continue;
+      lastError = nextIdResult.error.message;
+      continue;
+    }
+    const nextId = Number(nextIdResult.data?.job_id ?? 0) + 1;
+    const { data, error } = await supabase
+      .from(tableName)
+      .insert({ ...rowBase, job_id: nextId })
+      .select('*')
+      .single();
+    if (error) {
+      if (isMissingRelationError(error.message, error.code)) continue;
+      lastError = error.message;
+      continue;
+    }
+    const mapped = rowToJob(data as Record<string, unknown>);
+    upsertLocalJob(mapped);
+    void bestEffortLinkJobToVendorAndCustomer(mapped);
+    return { data: mapped };
+  }
+  return { error: lastError };
+}
+
 function rowToVendor(row: Record<string, unknown>): VendorData {
   const jobTypes = (row.job_types as { type: string; price: number; duration_minutes: number }[]) ?? [];
   const jobIds = Array.isArray(row.job_ids) ? (row.job_ids as number[]) : [];
@@ -162,8 +316,7 @@ export async function fetchJobsForVendor(
   vendorId: number,
   jobIds?: number[]
 ): Promise<JobData[]> {
-  const tableNames = [TABLE_JOBS];
-  if (TABLE_JOBS === 'JobsData') tableNames.push('jobs_data');
+  const tableNames = jobsTableNames();
 
   for (const tableName of tableNames) {
     let query = supabase.from(tableName).select('*');
@@ -194,8 +347,7 @@ export async function fetchJobsForVendor(
 
 /** Fetches a single job by job_id from Supabase (tries TABLE_JOBS then jobs_data). Returns null if not found. */
 export async function fetchJobById(jobId: number): Promise<JobData | null> {
-  const tableNames = [TABLE_JOBS];
-  if (TABLE_JOBS === 'JobsData') tableNames.push('jobs_data');
+  const tableNames = jobsTableNames();
 
   for (const tableName of tableNames) {
     const { data, error } = await supabase
@@ -222,8 +374,7 @@ export async function fetchJobsForCustomer(
   consumerName: string,
   jobIds?: number[]
 ): Promise<JobData[]> {
-  const tableNames = [TABLE_JOBS];
-  if (TABLE_JOBS === 'JobsData') tableNames.push('jobs_data');
+  const tableNames = jobsTableNames();
 
   for (const tableName of tableNames) {
     let query = supabase.from(tableName).select('*');
@@ -241,10 +392,14 @@ export async function fetchJobsForCustomer(
       /does not exist|relation.*not found/i.test(error.message);
     if (!isNotFound || tableName === tableNames[tableNames.length - 1]) {
       console.warn('Supabase fetchJobsForCustomer:', error.message);
-      return [];
+      break;
     }
   }
-  return [];
+  const jobs = readList<JobData>(STORAGE_KEYS.jobs);
+  const filtered = jobIds && jobIds.length > 0
+    ? jobs.filter((j) => jobIds.includes(j.job_id))
+    : jobs.filter((j) => j.consumer_name === consumerName);
+  return filtered.sort((a, b) => a.job_id - b.job_id);
 }
 
 /** Updates a job's status (e.g. 5 = Booked). Calls backend API (writes to Supabase with service key), then syncs localStorage. */
@@ -274,8 +429,7 @@ export async function updateJobStatus(
   }
 
   // Fallback: try direct Supabase update (may fail due to RLS) then localStorage
-  const tableNames = [TABLE_JOBS];
-  if (TABLE_JOBS === 'JobsData') tableNames.push('jobs_data');
+  const tableNames = jobsTableNames();
   for (const tableName of tableNames) {
     const { error } = await supabase
       .from(tableName)
@@ -311,6 +465,7 @@ export async function createJob(payload: {
   start_time?: string;
   status?: number;
 }): Promise<{ data: JobData } | { error: string }> {
+  let backendError = '';
   try {
     const res = await fetch('/api/jobs', {
       method: 'POST',
@@ -329,18 +484,26 @@ export async function createJob(payload: {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const msg = String(data?.detail ?? data?.error ?? `Server error: ${res.status}`);
-      return { error: msg };
+      backendError = String(data?.detail ?? data?.error ?? `Server error: ${res.status}`);
+    } else if (!data?.ok || !data?.job) {
+      backendError = 'No job returned from backend';
+    } else {
+      const mapped = rowToJob(data.job as Record<string, unknown>);
+      upsertLocalJob(mapped);
+      return { data: mapped };
     }
-    if (!data?.ok || !data?.job) return { error: 'No job returned from backend' };
-    const mapped = rowToJob(data.job as Record<string, unknown>);
-    upsertLocalJob(mapped);
-    return { data: mapped };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : 'Failed to create job';
-    console.warn('createJob API:', msg);
-    return { error: msg };
+    backendError = e instanceof Error ? e.message : 'Failed to create job';
+    console.warn('createJob API:', backendError);
   }
+
+  const fallback = await createJobDirectlyInSupabase(payload);
+  if ('data' in fallback) return fallback;
+
+  if (backendError && fallback.error) {
+    return { error: `${backendError}. Direct Supabase fallback failed: ${fallback.error}` };
+  }
+  return { error: fallback.error || backendError || 'Failed to create job' };
 }
 
 /** Insert new vendor into Supabase public."VendorData". Falls back to localStorage on error. */
