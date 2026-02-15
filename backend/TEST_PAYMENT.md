@@ -2,6 +2,25 @@
 
 End-to-end test for the fulfillment payment step: request payment details → pay 0.1 FET on-chain → submit tx + wallet → job status 9.
 
+## Agent Payment Protocol (Fetch.ai)
+
+The flow follows the [Agent Payment Protocol](https://innovationlab.fetch.ai/resources/docs/agent-transaction/agent-payment-protocol), with roles mapped to **customer pays vendor after service**:
+
+| Protocol role | In AgentPlace |
+|---------------|----------------|
+| **Seller** (receives payment) | Payment agent = platform (collects FET; job marked paid) |
+| **Buyer** (pays) | Customer (pays after service is done) |
+
+1. **RequestPayment** (seller → buyer): When you click “Get payment details”, the API triggers the payment agent (seller) to send `RequestPayment` to the buyer agent. The buyer agent stores it and the API returns the same payload to the frontend.
+2. **CommitPayment** (buyer → seller): When you submit the tx hash and wallet, the API sends `CommitPayment` from the buyer identity to the payment agent.
+3. **CompletePayment** or **CancelPayment** (seller → buyer): The payment agent verifies the on-chain tx and sends `CompletePayment` or `CancelPayment` back.
+
+**Role mapping (customer pays vendor after service):** Seller = payment agent (platform collects FET; job marked paid). Buyer = customer (pays after service). So **customer = buyer**, **platform (collecting for the job/vendor) = seller**. Both agents run in the backend process (payment agent port 8300, buyer/customer agent port 9300).
+
+**Vendor as recipient (automatic):** If the job has a `vendor_id` and that vendor has a running agent, the payment agent sends `RequestPayment` with the **vendor’s wallet** as recipient. The customer then pays 0.1 FET to the vendor directly; verification checks the tx went to that vendor address. If there is no matching vendor agent, the recipient is the payment agent (platform) wallet as before.
+
+**Agent Inspector:** The payment agent is a mailbox agent (registered in Agentverse). The app sends TriggerRequestPayment and CommitPayment to its **local endpoint** (127.0.0.1:8300), not via the mailbox, so the Inspector Messages tab may stay empty even when payments work. The mailbox is for external senders that reach the agent through Agentverse.
+
 ## Prerequisites
 
 1. **Backend running** on port 8081:

@@ -1,33 +1,39 @@
 """
-Payment agent (seller role) for AgentPlace — FET on-chain payments.
+Payment utilities for AgentPlace — FET on-chain verification and shared models.
 
-Uses uagents_core payment protocol and cosmpy to verify Fetch.ai ledger
-transactions. When payment is verified, updates job status to 8 (Payment sent)
-then 9 (Payment received).
+This module provides:
+  - verify_fet_payment_to_agent()  — cosmpy-based on-chain verification
+  - get_payment_request_payload()  — build frontend payload
+  - TriggerRequestPayment  — message model used by buyer agent → vendor (seller)
+  - FET_FUNDS / ACCEPTED_FUNDS constants
 
-Run with mailbox=True; register in Agent Inspector so the agent can receive
-CommitPayment via Agentverse.
+The *seller* protocol handlers live on each vendor agent (vendor.py).
+The *buyer* agent (autonomous orchestrator) is in buyer_agent.py.
 """
 
 import logging
 import os
 from typing import Any, Optional
-from uuid import uuid4
 
-from uagents import Agent, Context, Protocol
-from uagents_core.contrib.protocols.payment import (
-    CancelPayment,
-    CommitPayment,
-    CompletePayment,
-    Funds,
-    RequestPayment,
-    RejectPayment,
-    payment_protocol_spec,
-)
+from uagents import Model
+from uagents_core.contrib.protocols.payment import Funds
 
-from db_helpers import update_job_status
+log = logging.getLogger("payment_utils")
 
-log = logging.getLogger("payment_agent")
+# ─── Constants ─────────────────────────────────────────────────────────────
+
+FET_FUNDS = Funds(currency="FET", amount="0.1", payment_method="fet_direct")
+ACCEPTED_FUNDS = [FET_FUNDS]
+
+
+# ─── Trigger model (API → vendor seller) ──────────────────────────────────
+
+class TriggerRequestPayment(Model):
+    """Sent by the API (buyer identity) to a vendor agent so the vendor (seller) sends RequestPayment to the buyer."""
+    job_id: int
+    description: str | None = None
+    recipient_address: str | None = None  # If set, customer pays this address; else vendor wallet.
+
 
 # ─── FET verification (cosmpy) ─────────────────────────────────────────────
 
@@ -36,13 +42,22 @@ def verify_fet_payment_to_agent(
     transaction_id: str,
     expected_amount_fet: str,
     sender_fet_address: str,
-    recipient_agent_wallet: Any,
+    recipient_agent_wallet: Any = None,
+    expected_recipient_address: Optional[str] = None,
     logger: Optional[logging.Logger] = None,
 ) -> bool:
-    """Verify an on-chain FET transfer to the agent wallet. Returns True if valid."""
+    """Verify an on-chain FET transfer. Recipient is expected_recipient_address if set, else recipient_agent_wallet.address()."""
     _log = logger or log
     try:
         from cosmpy.aerial.client import LedgerClient, NetworkConfig
+
+        if expected_recipient_address:
+            expected_recipient = expected_recipient_address
+        elif recipient_agent_wallet is not None:
+            expected_recipient = str(recipient_agent_wallet.address())
+        else:
+            _log.error("Neither expected_recipient_address nor recipient_agent_wallet provided")
+            return False
 
         testnet = os.getenv("FET_USE_TESTNET", "true").lower() == "true"
         network_config = (
@@ -52,7 +67,6 @@ def verify_fet_payment_to_agent(
         )
         ledger = LedgerClient(network_config)
         expected_amount_micro = int(float(expected_amount_fet) * 10**18)
-        expected_recipient = str(recipient_agent_wallet.address())
 
         _log.info(
             "Verifying payment of %s FET from %s to %s (tx=%s)",
@@ -101,97 +115,7 @@ def verify_fet_payment_to_agent(
         return False
 
 
-# ─── Payment protocol (seller) ─────────────────────────────────────────────
-
-PAYMENT_AGENT_WALLET: Optional[Any] = None
-
-FET_FUNDS = Funds(currency="FET", amount="0.1", payment_method="fet_direct")
-ACCEPTED_FUNDS = [FET_FUNDS]
-
-
-def _set_agent_wallet(wallet: Any) -> None:
-    global PAYMENT_AGENT_WALLET
-    PAYMENT_AGENT_WALLET = wallet
-
-
-payment_proto = Protocol(spec=payment_protocol_spec, role="seller")
-
-
-@payment_proto.on_message(CommitPayment)
-async def handle_commit_payment(ctx: Context, sender: str, msg: CommitPayment) -> None:
-    """Verify on-chain FET payment and update job status; send CompletePayment or CancelPayment."""
-    job_id_str = (msg.reference or "").strip()
-    if not job_id_str or not job_id_str.isdigit():
-        ctx.logger.error("CommitPayment missing or invalid reference (job_id): %s", msg.reference)
-        await ctx.send(
-            sender,
-            CancelPayment(transaction_id=msg.transaction_id, reason="Missing job reference"),
-        )
-        return
-
-    job_id = int(job_id_str)
-    payment_verified = False
-
-    if msg.funds.payment_method == "fet_direct" and msg.funds.currency == "FET":
-        buyer_fet = None
-        if isinstance(msg.metadata, dict):
-            buyer_fet = msg.metadata.get("buyer_fet_wallet") or msg.metadata.get("buyer_fet_address")
-        if not buyer_fet or not PAYMENT_AGENT_WALLET:
-            ctx.logger.error("Missing buyer_fet_wallet in metadata or agent wallet")
-        else:
-            payment_verified = verify_fet_payment_to_agent(
-                transaction_id=msg.transaction_id,
-                expected_amount_fet=FET_FUNDS.amount,
-                sender_fet_address=str(buyer_fet),
-                recipient_agent_wallet=PAYMENT_AGENT_WALLET,
-                logger=ctx.logger,
-            )
-
-    if payment_verified:
-        update_job_status(job_id, 8)  # Payment sent
-        update_job_status(job_id, 9)  # Payment received
-        ctx.logger.info("Job %s payment verified; status updated to 8 then 9", job_id)
-        await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
-    else:
-        await ctx.send(
-            sender,
-            CancelPayment(
-                transaction_id=msg.transaction_id,
-                reason="Payment verification failed",
-            ),
-        )
-
-
-@payment_proto.on_message(RejectPayment)
-async def handle_reject_payment(ctx: Context, sender: str, msg: RejectPayment) -> None:
-    ctx.logger.info("Payment rejected by %s: %s", sender, msg.reason or "no reason")
-
-
-# ─── Factory ──────────────────────────────────────────────────────────────
-
-
-def create_payment_agent(
-    *,
-    seed: str,
-    port: int,
-    mailbox: bool = True,
-    network: Optional[str] = "testnet",
-) -> Agent:
-    """Create and wire the payment agent (seller). Call set_agent_wallet after creation."""
-    kwargs: dict[str, Any] = {
-        "name": "payment_agent",
-        "seed": seed,
-        "port": port,
-    }
-    if mailbox:
-        kwargs["mailbox"] = True
-    if network:
-        kwargs["network"] = network
-
-    agent = Agent(**kwargs)
-    agent.include(payment_proto, publish_manifest=True)
-    _set_agent_wallet(agent.wallet)
-    return agent
+# ─── API helpers ───────────────────────────────────────────────────────────
 
 
 def get_payment_request_payload(
@@ -213,36 +137,3 @@ def get_payment_request_payload(
     }
 
 
-def process_commit_payment_from_api(
-    job_id: int,
-    transaction_id: str,
-    buyer_fet_wallet: str,
-) -> tuple[bool, str]:
-    """
-    Verify FET payment and update job status. Used when the frontend submits
-    commit-payment via the API (same logic as the agent's CommitPayment handler).
-    Returns (True, "") on success, (False, "error message") on failure.
-    """
-    if not PAYMENT_AGENT_WALLET:
-        log.error("Payment agent wallet not set")
-        return False, "Payment agent not initialized"
-    try:
-        ok = verify_fet_payment_to_agent(
-            transaction_id=transaction_id,
-            expected_amount_fet=FET_FUNDS.amount,
-            sender_fet_address=buyer_fet_wallet,
-            recipient_agent_wallet=PAYMENT_AGENT_WALLET,
-            logger=log,
-        )
-    except Exception as e:
-        log.exception("FET verification threw: %s", e)
-        msg = str(e).strip() or "Ledger error"
-        if "DNS" in msg or "resolution failed" in msg or "UNAVAILABLE" in msg or "connect" in msg.lower():
-            return False, "Fetch.ai ledger unreachable. Check network and try again."
-        return False, f"Verification failed: {msg}"
-    if ok:
-        update_job_status(job_id, 8)
-        update_job_status(job_id, 9)
-        log.info("Job %s payment verified via API; status 8 then 9", job_id)
-        return True, ""
-    return False, "Transaction invalid or not found. Check tx hash, amount (0.1 FET), sender and recipient."
