@@ -463,9 +463,21 @@ export function AgentMatchingPage() {
                 <h1 className="text-base md:text-lg font-semibold text-foreground">Vendor Negotiation Process</h1>
                 <p className="text-xs text-muted-foreground">Your agent network is actively handling live vendor conversations.</p>
                 {lastPrompt && (
-                  <p className="text-[11px] text-muted-foreground/80 truncate max-w-[540px] mt-1">
-                    &ldquo;{lastPrompt}&rdquo; <span className="text-muted-foreground/70">{negotiateParams ? ` | submitted max budget $${negotiateParams.budget}` : ''}</span>
-                  </p>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground/80">
+                    <p className="truncate max-w-[420px] md:max-w-[540px]">
+                      &ldquo;{lastPrompt}&rdquo;
+                    </p>
+                    {negotiateParams?.budget != null && (
+                      <span className="shrink-0 rounded-full border border-border/60 bg-card/50 px-2 py-1">
+                        Max budget: ${Number(negotiateParams.budget).toLocaleString()}
+                      </span>
+                    )}
+                    {negotiateParams?.city && (
+                      <span className="shrink-0 rounded-full border border-border/60 bg-card/50 px-2 py-1">
+                        City: {negotiateParams.city}
+                      </span>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -476,7 +488,7 @@ export function AgentMatchingPage() {
               </span>
               <span className="px-2.5 py-1 rounded-full border border-orange-400/40 bg-orange-500/10 text-orange-300">Orange: Negotiating</span>
               <span className="px-2.5 py-1 rounded-full border border-emerald-400/40 bg-emerald-500/10 text-emerald-300">Green: Deal Found</span>
-              <span className="px-2.5 py-1 rounded-full border border-zinc-400/35 bg-zinc-500/15 text-zinc-100">Gray: No Availability</span>
+              <span className="px-2.5 py-1 rounded-full border border-zinc-400/40 bg-zinc-500/10 text-zinc-100">Gray: No Availability</span>
               <span className="px-2.5 py-1 rounded-full border border-red-400/40 bg-red-500/10 text-red-300">Red: No Deal</span>
             </div>
           </div>
@@ -543,6 +555,10 @@ export function AgentMatchingPage() {
                 <p className="text-[10px] uppercase tracking-[0.14em] text-emerald-200/80">Deals Locked</p>
                 <p className="text-xl font-semibold text-emerald-100 mt-1">{metrics.deals}</p>
               </div>
+              <div className="rounded-xl border border-zinc-400/35 bg-zinc-500/10 backdrop-blur-sm px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-[0.14em] text-zinc-200/80">No Availability</p>
+                <p className="text-xl font-semibold text-zinc-100 mt-1">{metrics.noAvailability}</p>
+              </div>
               <div className="rounded-xl border border-red-400/35 bg-red-500/10 backdrop-blur-sm px-3 py-2.5">
                 <p className="text-[10px] uppercase tracking-[0.14em] text-red-200/80">No Deal</p>
                 <p className="text-xl font-semibold text-red-100 mt-1">{metrics.noDeal}</p>
@@ -604,7 +620,7 @@ export function AgentMatchingPage() {
                 const pos = nodeLayout[index] ?? { x: 50, y: 50 };
                 const palette = WAR_STATUS_STYLE[node.status];
                 const isFocused = focusedNode?.id === node.id;
-                    const NodeIcon = node.status === 'deal' ? Handshake : XCircle;
+                const NodeIcon = (node.status === 'deal' ? Handshake : ['no_deal', 'no_availability'].includes(node.status)) ? XCircle : Bot;
                 const visualScale = (isFocused ? 1.06 : 1) * nodeVisualScale;
 
                 return (

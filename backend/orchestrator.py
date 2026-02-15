@@ -261,6 +261,7 @@ def parse_request_text(text: str, fields: Dict[str, str]) -> Dict[str, Any]:
     budget = int(budget_s) if budget_s.isdigit() else max(1, extract_price(text))
     urgency_s = fields.get("URGENCY", "")
     urgency = int(urgency_s) if urgency_s.isdigit() else 3
+    city = fields.get("CITY", "").strip()
     notes = fields.get("NOTES", "")
     notes_urlenc = fields.get("NOTES_URLENC", "")
     if notes_urlenc:
@@ -296,6 +297,7 @@ def parse_request_text(text: str, fields: Dict[str, str]) -> Dict[str, Any]:
         "service": service,
         "budget": budget if budget > 0 else 200,
         "urgency": max(1, min(5, urgency)),
+        "city": city,
         "notes": notes,
         "timezone": timezone_name,
         "duration_minutes": duration_minutes,
@@ -305,6 +307,9 @@ def parse_request_text(text: str, fields: Dict[str, str]) -> Dict[str, Any]:
     }
 
 
+def normalize_city(city: str) -> str:
+    """Lowercase and collapse whitespace for city comparisons."""
+    return " ".join((city or "").strip().lower().split())
 def _parse_iso_datetime(raw: str) -> Optional[datetime]:
     text = str(raw or "").strip()
     if not text:
@@ -1179,16 +1184,31 @@ def create_orchestrator_agent(
                 await ctx.send(sender, make_chat_message(_terminated_msg(rid, err_text)))
                 return
             ctx.logger.info(
-                "REQUEST_IN  rid=%s  sender=%s  service=%s  budget=$%s  urgency=%s  notes_len=%d  windows=%d  duration=%d",
+                "REQUEST_IN  rid=%s  sender=%s  service=%s  budget=$%s  urgency=%s  city=%s  notes_len=%d  has_availability_header=%s",
                 rid,
                 sender,
                 data["service"],
                 data["budget"],
                 data["urgency"],
+                data.get("city", ""),
                 len(notes_text),
                 len(data.get("availability_windows", [])),
                 int(data.get("duration_minutes", 60)),
             )
+
+            requested_city = data.get("city", "")
+            normalized_city = normalize_city(requested_city)
+            if normalized_city and normalized_city != "palo alto":
+                err_text = f"No vendors found for {data['service']} in {requested_city}."
+                ctx.logger.info(
+                    "CITY_FILTER_NO_MATCH  rid=%s  service=%s  city=%s",
+                    rid,
+                    data["service"],
+                    requested_city,
+                )
+                await ctx.send(sender, make_chat_message(_terminated_msg(rid, err_text)))
+                return
+
             try:
                 matched, selector_source = await selector_agent.select(
                     service=data["service"],

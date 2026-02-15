@@ -17,6 +17,7 @@ export interface NegotiateParams {
   service: string;
   budget: number;
   urgency: number;
+  city: string;
   timezone: string;
   duration_minutes: number;
   availability_windows: AvailabilityWindow[];

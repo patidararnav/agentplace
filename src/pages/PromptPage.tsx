@@ -129,6 +129,7 @@ function extractExplicitBudgetFromPrompt(prompt: string): number | null {
 export function PromptPage() {
   const [prompt, setPrompt] = useState('');
   const [urgency, setUrgency] = useState('');
+  const [city, setCity] = useState('');
   const [budgetStr, setBudgetStr] = useState('');
   const [avgPrice, setAvgPrice] = useState<{ avg_price: number; job_count: number; matched_types: string[] } | null>(null);
   const [avgPriceLoading, setAvgPriceLoading] = useState(false);
@@ -330,8 +331,10 @@ export function PromptPage() {
 
   const handleSubmit = () => {
     const trimmed = prompt.trim();
+    const trimmedCity = city.trim();
     if (!trimmed) return;
     if (!urgency) return;
+    if (!trimmedCity) return;
     if (!selectedCustomer) {
       setCustomerOpen(true);
       return;
@@ -370,6 +373,7 @@ export function PromptPage() {
       service,
       budget,
       urgency: urgencyInt,
+      city: trimmedCity,
       timezone,
       duration_minutes: 60,
       availability_windows: availabilityWindows,
@@ -555,6 +559,16 @@ export function PromptPage() {
               </Select>
             </div>
 
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">City</p>
+              <Input
+                value={city}
+                onChange={(e) => setCity(e.target.value)}
+                placeholder="e.g. Palo Alto"
+                className="bg-card"
+              />
+            </div>
+
             {/* Maximum budget — shown once the user types a job description */}
             {prompt.trim().length > 0 && (
               <div className="space-y-1.5">
@@ -659,7 +673,7 @@ export function PromptPage() {
 
             <Button
               onClick={() => handleSubmit()}
-              disabled={!prompt.trim() || !urgency}
+              disabled={!prompt.trim() || !urgency || !city.trim()}
               size="lg"
               className="w-full rounded-xl text-base font-medium gap-2"
             >

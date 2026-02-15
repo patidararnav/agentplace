@@ -306,6 +306,7 @@ def create_customer_agent(
     service: str,
     budget: int,
     urgency: int = 3,
+    city: str = "Palo Alto",
     notes: str = "",
     orchestrator_address: str,
     timezone_name: str = "UTC",
@@ -442,6 +443,7 @@ def create_customer_agent(
             f"SERVICE={service}",
             f"BUDGET={budget}",
             f"URGENCY={urgency}",
+            f"CITY={city}",
             f"TIMEZONE={timezone_name}",
             f"DURATION_MINUTES={max(1, int(duration_minutes))}",
             f"TIME_PRICE_PREFERENCE={pref_token}",
@@ -485,12 +487,8 @@ def create_customer_agent(
             ctx.logger.info("Waiting %.1fs for vendors to register...", startup_delay)
             await asyncio.sleep(startup_delay)
         ctx.logger.info(
-            "Sending request  RID=%s  service=%s  budget=$%s  urgency=%s  notes_len=%d",
-            rid,
-            service,
-            budget,
-            urgency,
-            len(notes or ""),
+            "Sending request  RID=%s  service=%s  budget=$%s  urgency=%s  city=%s  notes_len=%d",
+            rid, service, budget, urgency, city, len(notes or ""),
         )
         request_payload = _request_text()
         await ctx.send(orchestrator_address, make_chat_message(request_payload))
