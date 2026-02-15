@@ -426,7 +426,7 @@ async def run_negotiation(
         "\033[36m[%s]\033[0m Starting negotiation  service=%s  budget=$%s  "
         "urgency=%s  windows=%s  city=%s orchestrator=%s",
         session_id[:8], params.service, params.budget,
-        params.urgency, len(params.availability_windows), _orchestrator_address[:20] + "…",
+        params.urgency, len(params.availability_windows), params.city, _orchestrator_address[:20] + "…",
     )
 
     result: Dict[str, Any] = {
@@ -477,7 +477,6 @@ async def run_negotiation(
         availability_windows=params.availability_windows,
         time_price_preference=params.time_price_preference,
         latest_acceptable_start_iso=params.latest_acceptable_start_iso,
-        consumer_name=params.consumer_name or "",
         orchestrator_address=_orchestrator_address,
         port=cust_port,
         mailbox=False,          # ephemeral – receives replies on local HTTP

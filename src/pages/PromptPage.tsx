@@ -203,16 +203,6 @@ export function PromptPage() {
     return () => clearTimeout(timer);
   }, [trimmedPrompt, inferredService, hasDescription, fetchAvg]);
 
-  const toggleAvailabilitySlot = (day: Date, slotLabel: string) => {
-    const key = `${dateKey(day)}|${slotLabel}`;
-    setSelectedAvailability((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
   const applyRange = useCallback(
     (minDay: number, maxDay: number, minSlot: number, maxSlot: number, mode: 'add' | 'remove') => {
       const days = nextWeekDays();
@@ -711,7 +701,7 @@ export function PromptPage() {
               )}
               <div className="grid grid-cols-8 gap-x-1 gap-y-0">
                 <div className="h-9" />
-                {weekDays.map((day, dayIndex) => (
+                {weekDays.map((day) => (
                   <button
                     key={dateKey(day)}
                     type="button"

@@ -10,6 +10,7 @@ import {
   ArrowRight,
   Handshake,
   XCircle,
+  Bot,
   Activity,
 } from 'lucide-react';
 import { NegotiationChatModal } from '@/components/NegotiationChatModal';
@@ -563,11 +564,7 @@ export function AgentMatchingPage() {
                 <p className="text-[10px] uppercase tracking-[0.14em] text-red-200/80">No Deal</p>
                 <p className="text-xl font-semibold text-red-100 mt-1">{metrics.noDeal}</p>
               </div>
-              <div className="rounded-xl border border-zinc-400/35 bg-zinc-500/15 backdrop-blur-sm px-3 py-2.5">
-                <p className="text-[10px] uppercase tracking-[0.14em] text-zinc-200/80">No Availability</p>
-                <p className="text-xl font-semibold text-zinc-100 mt-1">{metrics.noAvailability}</p>
               </div>
-            </div>
 
             <div
               onWheel={handleNodeCanvasWheel}
@@ -620,7 +617,11 @@ export function AgentMatchingPage() {
                 const pos = nodeLayout[index] ?? { x: 50, y: 50 };
                 const palette = WAR_STATUS_STYLE[node.status];
                 const isFocused = focusedNode?.id === node.id;
-                const NodeIcon = (node.status === 'deal' ? Handshake : ['no_deal', 'no_availability'].includes(node.status)) ? XCircle : Bot;
+                const NodeIcon = node.status === 'deal'
+                  ? Handshake
+                  : ['no_deal', 'no_availability'].includes(node.status)
+                    ? XCircle
+                    : Bot;
                 const visualScale = (isFocused ? 1.06 : 1) * nodeVisualScale;
 
                 return (
