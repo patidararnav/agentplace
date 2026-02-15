@@ -132,11 +132,34 @@ export async function fetchJobs(): Promise<FetchResult<JobData>> {
   return { data };
 }
 
-/** Fetches jobs for one vendor from browser localStorage. */
+/** Fetches jobs for one vendor: tries Supabase (JobsData then jobs_data) by vendor_id or job_ids, then falls back to localStorage. */
 export async function fetchJobsForVendor(
   vendorId: number,
   jobIds?: number[]
 ): Promise<JobData[]> {
+  const tableNames = [TABLE_JOBS];
+  if (TABLE_JOBS === 'JobsData') tableNames.push('jobs_data');
+
+  for (const tableName of tableNames) {
+    let query = supabase.from(tableName).select('*');
+    if (jobIds && jobIds.length > 0) {
+      query = query.in('job_id', jobIds);
+    } else {
+      query = query.eq('vendor_id', vendorId);
+    }
+    const { data, error } = await query.order('job_id');
+    if (!error) {
+      return (data ?? []).map((row) => rowToJob(row as Record<string, unknown>));
+    }
+    const isNotFound =
+      error.code === '42P01' ||
+      /does not exist|relation.*not found/i.test(error.message);
+    if (!isNotFound || tableName === tableNames[tableNames.length - 1]) {
+      console.warn('Supabase fetchJobsForVendor:', error.message);
+      break;
+    }
+  }
+
   const jobs = readList<JobData>(STORAGE_KEYS.jobs);
   const filtered = jobIds && jobIds.length > 0
     ? jobs.filter((j) => jobIds.includes(j.job_id))

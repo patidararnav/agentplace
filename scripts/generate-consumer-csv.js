@@ -1,7 +1,8 @@
 /**
  * Reads jobs_data.csv, counts jobs per consumer_name,
- * and writes consumer_data.csv with one row per customer: consumer_name, job_count.
- * Jobs are stored in jobs_data; customers and vendors reference jobs by job_id.
+ * and writes consumer_data.csv with one row per customer: consumer_name, job_count, job_ids.
+ * Every consumer_name that appears in any job gets an entry in the output (no jobs
+ * are assigned to customers that don't exist in the resulting customer table).
  *
  * Run after: node scripts/generate-vendor-csv.js
  * Then: node scripts/generate-consumer-csv.js
@@ -92,6 +93,7 @@ for (let r = 1; r < lines.length; r++) {
   }
 }
 
+// Output: one row per customer that appears in jobs_data (every job's consumer_name has an entry)
 const outHeader = 'consumer_name,job_count,job_ids';
 const outRows = Object.entries(byConsumer).map(([consumerName, { job_count, job_ids }]) =>
   [escapeCsv(consumerName), job_count, escapeCsv(JSON.stringify(job_ids))].join(',')

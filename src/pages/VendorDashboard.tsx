@@ -1,17 +1,36 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Pencil, Plus, ArrowLeft, Calendar, Wrench, TrendingUp, Star, Briefcase, Search } from 'lucide-react';
+import { Pencil, Plus, ArrowLeft, Calendar, Wrench, TrendingUp, Star, Briefcase, Search, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { useApp } from '@/context/AppContext';
+import { fetchJobsForVendor } from '@/lib/supabase-data';
+import type { JobData } from '@/types';
 
 export function VendorDashboard() {
   const navigate = useNavigate();
-  const { selectedVendor, vendors, jobs, setSelectedVendor } = useApp();
+  const { selectedVendor, vendors, setSelectedVendor } = useApp();
   const vendor = selectedVendor;
   const [vendorSearch, setVendorSearch] = useState('');
+  const [vendorJobs, setVendorJobs] = useState<JobData[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!vendor) {
+      setVendorJobs([]);
+      return;
+    }
+    setJobsLoading(true);
+    const jobIds = (vendor.job_ids ?? []).map((id: number | string) => Number(id));
+    fetchJobsForVendor(
+      vendor.vendor_id,
+      jobIds.length > 0 ? jobIds : undefined
+    )
+      .then(setVendorJobs)
+      .finally(() => setJobsLoading(false));
+  }, [vendor?.vendor_id]);
 
   const filteredVendors = useMemo(() => {
     const q = vendorSearch.trim().toLowerCase();
@@ -23,7 +42,6 @@ export function VendorDashboard() {
     });
   }, [vendors, vendorSearch]);
 
-  const vendorJobs = vendor ? jobs.filter((j) => j.vendor_id === vendor.vendor_id) : [];
   const unfinishedCount = vendorJobs.filter((j) => (j.status ?? 0) < 7).length;
 
   const jobTypes = vendor?.job_types ?? [];
@@ -153,7 +171,7 @@ export function VendorDashboard() {
                       </div>
                       <div>
                         <p className="text-2xl font-bold text-foreground">{vendor.job_types.length}</p>
-                        <p className="text-xs text-muted-foreground">Services</p>
+                        <p className="text-xs text-muted-foreground">Services offered</p>
                       </div>
                     </div>
                   </CardContent>
@@ -165,7 +183,9 @@ export function VendorDashboard() {
                         <TrendingUp className="size-5 text-primary" />
                       </div>
                       <div>
-                        <p className="text-2xl font-bold text-foreground">{unfinishedCount}</p>
+                        <p className="text-2xl font-bold text-foreground">
+                          {jobsLoading ? '—' : unfinishedCount}
+                        </p>
                         <p className="text-xs text-muted-foreground">Unfinished jobs</p>
                       </div>
                     </div>
@@ -190,7 +210,7 @@ export function VendorDashboard() {
 
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-lg font-semibold text-foreground">Services</h2>
+                  <h2 className="text-lg font-semibold text-foreground">Revenue per service</h2>
                   <Button variant="outline" size="sm" className="gap-1.5" onClick={() => navigate('/vendor/edit')}>
                     <Pencil className="size-3.5" />
                     Edit vendor
@@ -200,6 +220,13 @@ export function VendorDashboard() {
                   <Card>
                     <CardContent className="p-6 text-center text-muted-foreground">
                       No services yet. Edit vendor to add job types and availability.
+                    </CardContent>
+                  </Card>
+                ) : jobsLoading ? (
+                  <Card>
+                    <CardContent className="p-6 flex items-center justify-center gap-2 text-muted-foreground">
+                      <Loader2 className="size-4 animate-spin" />
+                      Loading jobs…
                     </CardContent>
                   </Card>
                 ) : (
@@ -214,12 +241,15 @@ export function VendorDashboard() {
                             <div>
                               <p className="font-medium text-foreground">{jt.type}</p>
                               <p className="text-sm text-muted-foreground">
-                                {jt.duration_minutes} min · ${jt.price}
+                                {jt.duration_minutes} min · ${jt.price} listed
                               </p>
                             </div>
                             <div className="text-right shrink-0">
                               <p className="text-lg font-bold text-foreground">
-                                ${total.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} / {completed} job{completed !== 1 ? 's' : ''}
+                                ${total.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {completed} job{completed !== 1 ? 's' : ''} completed
                               </p>
                             </div>
                           </CardContent>

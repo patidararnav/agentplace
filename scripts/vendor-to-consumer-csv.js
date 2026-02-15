@@ -1,6 +1,7 @@
 /**
- * Reads vendor_data.csv, groups all upcoming_jobs by consumer_name,
- * and writes consumer_data.csv with one row per customer and their jobs.
+ * Reads vendor_data.csv (must have "name" and "upcoming_jobs" columns), groups all
+ * upcoming_jobs by consumer_name, and writes consumer_data.csv with one row per
+ * customer. Every customer listed in any job gets an entry in the output.
  *
  * Run: node scripts/vendor-to-consumer-csv.js
  */
