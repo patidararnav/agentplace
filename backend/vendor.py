@@ -94,6 +94,7 @@ def create_vendor_agent(
     network: Optional[str] = None,
     readme_path: Optional[str] = None,
     publish_agent_details: bool = False,
+    registration_policy: Optional[Any] = None,
 ) -> Agent:
     """Return a fully-wired vendor Agent ready to run or add to a Bureau."""
 
@@ -118,6 +119,9 @@ def create_vendor_agent(
             "aggression": str(aggression),
             "protocol": "chat",
         }
+
+    if registration_policy is not None:
+        kwargs["registration_policy"] = registration_policy
 
     agent = Agent(**kwargs)
     supported = set(services)

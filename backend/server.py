@@ -3,9 +3,10 @@ FastAPI bridge server for the agentplace frontend.
 
 Architecture
 ────────────
-•  On startup the server launches a **persistent orchestrator**.
-   Vendor agents are added manually via API and stay alive for the
-   lifetime of the process.
+•  On startup the server launches a **persistent orchestrator** and
+   one persistent vendor agent per vendor row in Supabase. Vendors can
+   also be added manually via API and stay alive for the lifetime of
+   the process.
 
 •  Per negotiation request from the frontend the server spins up an
    **ephemeral customer agent** (also mailbox-registered) that talks to
@@ -42,16 +43,17 @@ from pydantic import BaseModel
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from customer import create_customer_agent
+from db_helpers import load_all_vendors, vendor_row_to_agent_config
 from orchestrator import create_orchestrator_agent
 from vendor import create_vendor_agent
 
 load_dotenv()
 
-# Fund helper — pays for Almanac registration on testnet
-try:
-    from uagents.setup import fund_agent_if_low
-except ImportError:
-    fund_agent_if_low = None  # type: ignore
+# Use API-only registration (fast, no testnet funds needed).
+# The default policy also does ledger/blockchain registration which
+# requires calling the faucet (~5 s per agent).  For local dev the
+# Almanac REST API is sufficient for agent discovery.
+from uagents.registration import AlmanacApiRegistrationPolicy
 
 # ─── Logging ──────────────────────────────────────────────────────────────
 
@@ -72,14 +74,14 @@ log = logging.getLogger("server")
 
 ORCHESTRATOR_SEED = os.getenv("ORCHESTRATOR_SEED", "orchestrator_seed_treehacks_2026")
 ORCHESTRATOR_PORT = int(os.getenv("ORCHESTRATOR_PORT", "8001"))
+VENDOR_PORT_START = int(os.getenv("VENDOR_PORT_START", "8100"))
 MAX_ROUNDS = int(os.getenv("MAX_NEGOTIATION_ROUNDS", "5"))
 
 # Port range for ephemeral customer agents (one per session)
 _CUSTOMER_PORT_START = 9200
 _next_customer_port = _CUSTOMER_PORT_START
 
-# Vendor definitions are intentionally empty at startup.
-# Add vendors manually via POST /api/vendors.
+# Vendor definitions are populated from Supabase at startup.
 VENDOR_DEFS: list[dict[str, Any]] = []
 
 # ─── FastAPI app ──────────────────────────────────────────────────────────
@@ -109,7 +111,7 @@ sessions: Dict[str, Dict[str, Any]] = {}
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    """Create and launch the persistent orchestrator (vendors are manual)."""
+    """Create and launch persistent orchestrator + all Supabase vendor agents."""
     global _orchestrator_agent, _orchestrator_address
 
     log.info("\033[36m━━━ AgentPlace Server Starting ━━━\033[0m")
@@ -123,17 +125,9 @@ async def on_startup() -> None:
         mailbox=True,
         network="testnet",
         publish_agent_details=True,
+        registration_policy=AlmanacApiRegistrationPolicy(),
     )
     _orchestrator_address = _orchestrator_agent.address
-
-    # Fund agents for Almanac registration (required on testnet)
-    if fund_agent_if_low is not None:
-        log.info("\033[33m[fund]\033[0m Checking orchestrator wallet…")
-        try:
-            fund_agent_if_low(_orchestrator_agent.wallet.address())
-            log.info("\033[32m[fund]\033[0m Orchestrator funded OK")
-        except Exception as exc:
-            log.warning("\033[31m[fund]\033[0m Orchestrator funding failed: %s", exc)
 
     log.info(
         "\033[34m[orchestrator]\033[0m address=%s  port=%s  mailbox=True",
@@ -141,7 +135,49 @@ async def on_startup() -> None:
     )
     _agent_tasks.append(asyncio.create_task(_run_agent(_orchestrator_agent, "orchestrator")))
 
-    # ── Vendors (manual only; no seeded vendors at startup) ──
+    # ── Vendors (auto-load every vendor from Supabase) ──
+    try:
+        rows = load_all_vendors()
+    except Exception as exc:
+        rows = []
+        log.warning("\033[31m[vendor]\033[0m Failed to load vendors from Supabase: %s", exc)
+
+    global _next_vendor_port
+    _next_vendor_port = VENDOR_PORT_START
+
+    for row in rows:
+        try:
+            cfg = vendor_row_to_agent_config(row)
+            services = [s for s in cfg["services"] if s]
+            base_prices = cfg["base_prices"] or {}
+            if not services:
+                log.warning(
+                    "\033[33m[vendor]\033[0m Skipping vendor_id=%s (%s): no services configured",
+                    cfg["vendor_id"], cfg["name"],
+                )
+                continue
+
+            # Ensure every service has a usable fallback price.
+            for svc in services:
+                if int(base_prices.get(svc, 0)) <= 0:
+                    base_prices[svc] = 150
+
+            port = _next_vendor_port
+            _next_vendor_port += 1
+            seed = f"vendor_supabase_{cfg['vendor_id']}_{port}"
+
+            VENDOR_DEFS.append({
+                "vendor_id": cfg["vendor_id"],
+                "name": cfg["name"],
+                "seed": seed,
+                "port": port,
+                "services": services,
+                "base_prices": base_prices,
+                "aggression": cfg["aggression"],
+            })
+        except Exception as exc:
+            log.warning("\033[33m[vendor]\033[0m Skipping malformed vendor row: %s", exc)
+
     for vdef in VENDOR_DEFS:
         va = create_vendor_agent(
             name=vdef["name"],
@@ -154,14 +190,8 @@ async def on_startup() -> None:
             mailbox=False,          # local endpoint only – no manual inspector setup
             network="testnet",
             publish_agent_details=False,
+            registration_policy=AlmanacApiRegistrationPolicy(),
         )
-
-        # Fund vendor wallet for Almanac registration
-        if fund_agent_if_low is not None:
-            try:
-                fund_agent_if_low(va.wallet.address())
-            except Exception as exc:
-                log.warning("\033[31m[fund]\033[0m %s funding failed: %s", vdef["name"], exc)
 
         _vendor_agents.append(va)
         log.info(
@@ -178,7 +208,7 @@ async def on_startup() -> None:
         "\033[36m    Orchestrator: %s\033[0m", _orchestrator_address,
     )
     if not _vendor_agents:
-        log.info("\033[33m[vendor]\033[0m No vendors launched. Add vendors via POST /api/vendors.")
+        log.info("\033[33m[vendor]\033[0m No vendors launched from Supabase.")
 
 
 @app.on_event("shutdown")
@@ -375,14 +405,8 @@ async def run_negotiation(
         result_sink=result,
         finished_event=finished,
         event_queue=event_queue,
+        registration_policy=AlmanacApiRegistrationPolicy(),
     )
-
-    # Fund customer wallet for Almanac registration
-    if fund_agent_if_low is not None:
-        try:
-            fund_agent_if_low(customer.wallet.address())
-        except Exception as exc:
-            log.warning("\033[31m[fund]\033[0m Customer %s funding failed: %s", session_id[:8], exc)
 
     # Fix event-loop mismatch (same issue as persistent agents)
     running_loop = asyncio.get_running_loop()
@@ -582,7 +606,7 @@ async def list_agents() -> Dict[str, Any]:
 # ─── Dynamic vendor registration ─────────────────────────────────────────
 
 # Port counter for dynamically added vendor agents
-_next_vendor_port = 8200
+_next_vendor_port = VENDOR_PORT_START
 
 
 class CreateVendorRequest(BaseModel):
@@ -625,6 +649,7 @@ async def register_vendor(req: CreateVendorRequest) -> Dict[str, Any]:
         mailbox=False,
         network="testnet",
         publish_agent_details=False,
+        registration_policy=AlmanacApiRegistrationPolicy(),
     )
 
     # Fix event-loop mismatch (same issue as persistent agents)
@@ -678,6 +703,101 @@ async def add_vendor_service(req: AddServiceRequest) -> Dict[str, Any]:
             return {"status": "updated", "vendor": vdef["name"], "services": vdef["services"]}
 
     return {"status": "vendor_not_found", "vendor": req.vendor_name}
+
+
+@app.get("/api/avg-price")
+async def avg_price(query: str = "", service: str = "plumbing") -> Dict[str, Any]:
+    """Return the average price of similar past jobs, using LLM matching.
+
+    Accepts a raw user query (e.g. 'leaky faucet in my kitchen') and/or
+    a service keyword.  The LLM decides which job types from the database
+    are relevant, and the average price is computed over those types.
+    """
+    import json as _json
+    from chat_utils import generate_text
+    from db_helpers import compute_avg_price, get_all_job_types_with_prices
+
+    rows = get_all_job_types_with_prices()
+    if not rows:
+        return {"avg_price": 0, "job_count": 0, "matched_types": [], "query": query or service}
+
+    # Collect distinct job types
+    distinct_types = sorted({
+        (r.get("type") or "").strip()
+        for r in rows
+        if (r.get("type") or "").strip()
+    })
+
+    if not distinct_types:
+        return {"avg_price": 0, "job_count": 0, "matched_types": [], "query": query or service}
+
+    user_text = query.strip() if query.strip() else service
+
+    # Ask the LLM which job types are relevant to this query
+    system_prompt = (
+        "You are a job-type classifier. Given a customer's service request and "
+        "a list of job types from a database, return ONLY the job types that are "
+        "relevant to what the customer needs.\n\n"
+        "Rules:\n"
+        '- Match by intent, not exact wording. "leaky faucet" matches "Plumbing Repair" and "Pipe Leak Fix".\n'
+        "- Include all reasonably related types (e.g. for a plumbing issue, include all plumbing-related types).\n"
+        "- Do NOT include clearly unrelated types.\n"
+        '- Return ONLY a JSON array of matching type strings, e.g. ["Plumbing Repair","Pipe Leak Fix"]\n'
+        "- No markdown, no explanation, just the JSON array."
+    )
+    user_prompt = (
+        f"Customer request: {user_text}\n\n"
+        f"Available job types in database:\n{_json.dumps(distinct_types)}\n\n"
+        "Which job types are relevant? Return only the JSON array."
+    )
+
+    raw = await generate_text(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        fallback="[]",
+        max_tokens=200,
+        temperature=0.1,
+    )
+
+    log.info("\033[35m[API]\033[0m avg-price LLM response: %s", raw[:300])
+
+    # Parse the LLM response
+    import re as _re
+    matched_types: list[str] = []
+    # Strip markdown fences if present
+    cleaned = _re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    cleaned = _re.sub(r"\s*```$", "", cleaned)
+    try:
+        parsed = _json.loads(cleaned)
+        if isinstance(parsed, list):
+            matched_types = [str(t).strip() for t in parsed if str(t).strip()]
+    except Exception:
+        # Fallback: try to find a JSON array in the response
+        m = _re.search(r"\[.*?\]", cleaned, flags=_re.DOTALL)
+        if m:
+            try:
+                parsed = _json.loads(m.group(0))
+                if isinstance(parsed, list):
+                    matched_types = [str(t).strip() for t in parsed if str(t).strip()]
+            except Exception:
+                pass
+
+    # If LLM returned nothing, fall back to substring matching
+    if not matched_types:
+        needle = (service or user_text).strip().lower()
+        for t in distinct_types:
+            tl = t.lower()
+            if needle in tl or tl in needle:
+                matched_types.append(t)
+
+    result = compute_avg_price(rows, matched_types)
+    result["query"] = user_text
+
+    log.info(
+        "\033[35m[API]\033[0m GET /api/avg-price  query=%r  matched=%s  avg=$%s  count=%d",
+        user_text, result["matched_types"], result["avg_price"], result["job_count"],
+    )
+    return result
 
 
 @app.get("/api/health")

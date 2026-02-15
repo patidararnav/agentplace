@@ -30,6 +30,7 @@ from chat_utils import (
     parse_fields,
     services_from_csv,
 )
+from vendor_selector import VendorSelectorAgent
 
 
 # ─── Convergence Logic (pure / importable) ───────────────────────────────
@@ -197,7 +198,8 @@ def create_orchestrator_agent(
     network: Optional[str] = None,
     readme_path: Optional[str] = None,
     publish_agent_details: bool = False,
-    event_queue: Optional[Any] = None,
+    registration_policy: Optional[Any] = None,
+    event_queue: Optional[asyncio.Queue] = None,
     on_deal_callback: Optional[Any] = None,
 ) -> Agent:
     """Return a fully-wired orchestrator Agent.
@@ -232,9 +234,13 @@ def create_orchestrator_agent(
             "protocol": "chat",
         }
 
+    if registration_policy is not None:
+        kwargs["registration_policy"] = registration_policy
+
     agent = Agent(**kwargs)
     vendor_registry: Dict[str, Dict[str, Any]] = {}
     requests: Dict[str, Dict[str, Any]] = {}
+    selector_agent = VendorSelectorAgent()
 
     def _push_event(evt: Dict[str, Any]) -> None:
         """Push a real-time event to the WebSocket queue (non-blocking)."""
@@ -417,10 +423,12 @@ def create_orchestrator_agent(
         if mt == "request":
             rid = fields.get("RID", str(uuid4()))
             data = parse_request_text(text, fields)
-            matched: Set[str] = {
-                va for va, p in vendor_registry.items()
-                if data["service"] in p["services"]
-            }
+            matched, selector_source = await selector_agent.select(
+                service=data["service"],
+                notes=data["notes"],
+                budget=data["budget"],
+                vendor_registry=vendor_registry,
+            )
             requests[rid] = {
                 "customer": sender, **data,
                 "vendors": matched, "closed": False, "vendor_states": {},
@@ -431,12 +439,17 @@ def create_orchestrator_agent(
                 return
             for va in matched:
                 ensure_vendor_state(requests[rid], va)
-            ctx.logger.info("NEW REQUEST  rid=%s  service=%s  budget=$%s  matched=%d",
-                            rid, data["service"], data["budget"], len(matched))
+            ctx.logger.info(
+                "NEW REQUEST  rid=%s  service=%s  budget=$%s  matched=%d  selector=%s",
+                rid, data["service"], data["budget"], len(matched), selector_source
+            )
             _push_event({
                 "type": "log",
                 "agent": "orchestrator",
-                "text": f"NEW REQUEST  service={data['service']}  budget=${data['budget']}  matched={len(matched)} vendors",
+                "text": (
+                    f"NEW REQUEST  service={data['service']}  budget=${data['budget']}  "
+                    f"matched={len(matched)} vendors  selector={selector_source}"
+                ),
             })
             _push_event({
                 "type": "step",

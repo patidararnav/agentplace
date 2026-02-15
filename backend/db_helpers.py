@@ -220,3 +220,39 @@ def update_job_status(job_id: int, status: int) -> bool:
     except Exception as e:
         logger.error("Failed to update job %d status: %s", job_id, e)
         return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ANALYTICS helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def get_all_job_types_with_prices() -> List[Dict[str, Any]]:
+    """Return all jobs with their type and price from the database."""
+    sb = get_supabase()
+    try:
+        result = sb.table(TABLE_JOBS).select("price, type").execute()
+        return result.data or []
+    except Exception as e:
+        logger.warning("Failed to query jobs: %s", e)
+        return []
+
+
+def compute_avg_price(rows: List[Dict[str, Any]], matched_types: List[str]) -> Dict[str, Any]:
+    """Compute average price from rows whose type is in *matched_types*."""
+    matched_lower = {t.strip().lower() for t in matched_types if t.strip()}
+    prices: list[int] = []
+    for row in rows:
+        job_type = (row.get("type") or "").strip().lower()
+        price = row.get("price")
+        if price is None or price <= 0:
+            continue
+        if job_type in matched_lower:
+            prices.append(int(price))
+
+    avg = round(sum(prices) / len(prices)) if prices else 0
+    return {
+        "avg_price": avg,
+        "job_count": len(prices),
+        "matched_types": sorted(matched_lower),
+    }
