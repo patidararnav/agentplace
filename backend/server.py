@@ -338,6 +338,7 @@ class NegotiateRequest(BaseModel):
     urgency: int = 3
     aggression: int = 3
     notes: str = ""
+    consumer_name: str = ""
 
 
 class NegotiateResponse(BaseModel):
@@ -402,6 +403,7 @@ async def run_negotiation(
         urgency=params.urgency,
         aggression=params.aggression,
         notes=params.notes or f"Requesting {params.service} service",
+        consumer_name=params.consumer_name or "",
         orchestrator_address=_orchestrator_address,
         port=cust_port,
         mailbox=False,          # ephemeral – receives replies on local HTTP
@@ -487,6 +489,7 @@ async def run_negotiation(
         "outcome_text": result.get("outcome_text", ""),
         "winner": result.get("winner", ""),
         "winner_price": result.get("winner_price", 0),
+        "winner_job_id": result.get("winner_job_id"),
         "vendor_results": vendor_results,
         "config": result.get("config", {}),
     })
@@ -818,6 +821,48 @@ async def avg_price(query: str = "", service: str = "plumbing") -> Dict[str, Any
 @app.get("/api/health")
 async def health() -> Dict[str, str]:
     return {"status": "ok", "orchestrator": _orchestrator_address}
+
+
+class CreateJobRequest(BaseModel):
+    """Create a job in JobsData and attach to ConsumerData / VendorData."""
+    consumer_name: str
+    vendor_id: int = 0
+    job_type: str = "General"
+    price: int = 0
+    duration_minutes: int = 60
+    date: str | None = None
+    start_time: str = "09:00"
+    status: int = 5  # 5 = Booked
+
+
+@app.post("/api/jobs")
+async def create_job_api(req: CreateJobRequest) -> Dict[str, Any]:
+    """Create a job in Supabase JobsData and update ConsumerData/VendorData job_ids."""
+    log.info(
+        "\033[35m[API]\033[0m POST /api/jobs  consumer=%s  vendor_id=%s  type=%s  price=$%s",
+        req.consumer_name, req.vendor_id, req.job_type, req.price,
+    )
+    try:
+        from db_helpers import create_job as _create_job
+        row = _create_job(
+            vendor_id=req.vendor_id,
+            consumer_name=req.consumer_name.strip(),
+            job_type=req.job_type or "General",
+            price=req.price,
+            duration_minutes=req.duration_minutes,
+            date=req.date,
+            start_time=req.start_time,
+            status=req.status,
+        )
+        if row:
+            job_id = row.get("job_id")
+            log.info("\033[32m[API]\033[0m Job created: job_id=%s  consumer=%s", job_id, req.consumer_name)
+            return {"ok": True, "job_id": job_id, "job": row}
+        log.warning("\033[31m[API]\033[0m create_job returned None for consumer=%s", req.consumer_name)
+        return {"ok": False, "error": "Create job failed — check backend logs"}
+    except Exception as e:
+        log.error("\033[31m[API]\033[0m create_job exception: %s", e, exc_info=True)
+        return {"ok": False, "error": str(e)}
 
 
 class UpdateJobStatusRequest(BaseModel):

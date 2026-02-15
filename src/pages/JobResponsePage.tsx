@@ -17,7 +17,7 @@ import {
   MessageSquare,
 } from 'lucide-react';
 import { NegotiationChatModal } from '@/components/NegotiationChatModal';
-import { updateJobStatus } from '@/lib/supabase-data';
+import { createJob } from '@/lib/api';
 import { useApp } from '@/context/AppContext';
 import type { VendorQuote } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -49,7 +49,7 @@ const JOB_STATUS_BOOKED = 5;
 
 export function JobResponsePage() {
   const navigate = useNavigate();
-  const { negotiationResults, selectedCustomer } = useApp();
+  const { negotiationResults, selectedCustomer, negotiateParams, refetchCustomers, vendors } = useApp();
   const [selectedChat, setSelectedChat] = useState<VendorQuote | null>(null);
   const [selectedCoT, setSelectedCoT] = useState<VendorQuote | null>(null);
   const [acceptedQuote, setAcceptedQuote] = useState<VendorQuote | null>(null);
@@ -59,10 +59,49 @@ export function JobResponsePage() {
   const unavailableVendors = negotiationResults?.unavailableVendors ?? [];
 
   async function handleAccept(q: VendorQuote) {
-    if (q.job_id != null) {
-      await updateJobStatus(q.job_id, JOB_STATUS_BOOKED);
+    const consumerName = selectedCustomer?.consumer_name;
+    if (!consumerName) {
+      setAcceptedQuote(q);
+      return;
     }
-    setAcceptedQuote(q);
+
+    // Look up the real vendor_id by vendor name so both VendorData and
+    // ConsumerData get the job_id appended to their job_ids arrays.
+    const matchedVendor = vendors.find(
+      (v) => v.name.toLowerCase() === q.name.toLowerCase(),
+    );
+    const realVendorId = matchedVendor?.vendor_id ?? 0;
+
+    // Extract date (YYYY-MM-DD) and start_time (HH:MM) from the quote's dateTime
+    // so the job lands on the correct calendar day/slot instead of the default.
+    const dt = new Date(q.dateTime);
+    const jobDate = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    const jobStart = `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+
+    // Always create a fresh job row in JobsData with the correct
+    // consumer_name (from selectedCustomer) so the customer calendar
+    // can find it.  The backend also updates ConsumerData.job_ids and
+    // VendorData.job_ids in the same call.
+    const created = await createJob({
+      consumer_name: consumerName,
+      vendor_id: realVendorId,
+      job_type: negotiateParams?.service ?? 'General',
+      price: q.price,
+      duration_minutes: q.durationMinutes ?? 90,
+      date: jobDate,
+      start_time: jobStart,
+      status: JOB_STATUS_BOOKED,
+    });
+
+    const jobId = (created.ok && created.job_id != null)
+      ? created.job_id
+      : q.job_id ?? null;
+
+    setAcceptedQuote(jobId != null ? { ...q, job_id: jobId } : q);
+
+    // Refresh consumer list so the customer's job_ids is up-to-date
+    // before the user navigates to the calendar.
+    refetchCustomers?.();
   }
 
   return (

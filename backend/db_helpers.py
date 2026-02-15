@@ -147,7 +147,11 @@ def create_job(
         .limit(1)
         .execute()
     )
-    next_id = ((existing.data[0]["job_id"] if existing.data else 0) + 1)
+    next_id = (
+        (existing.data[0]["job_id"] + 1)
+        if (existing.data and len(existing.data) > 0)
+        else 1
+    )
 
     if date is None:
         date = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
@@ -174,9 +178,11 @@ def create_job(
     }
 
     try:
+        logger.info("Inserting job into %s: %s", TABLE_JOBS, row)
         result = sb.table(TABLE_JOBS).insert(row).execute()
+        logger.info("Insert result: data=%s", result.data)
     except Exception as e:
-        logger.error("Failed to create job: %s", e)
+        logger.error("Failed to create job in %s: %s", TABLE_JOBS, e)
         return None
 
     # Update vendor's job_ids
@@ -197,7 +203,7 @@ def create_job(
     except Exception as e:
         logger.warning("Failed to update vendor job_ids: %s", e)
 
-    # Update consumer's job_ids + job_count
+    # Update consumer's job_ids + job_count (or insert consumer row if missing)
     try:
         consumer = (
             sb.table(TABLE_CONSUMER)
@@ -207,11 +213,18 @@ def create_job(
             .execute()
         )
         if consumer.data:
-            c_ids = consumer.data.get("job_ids") or []
+            c_ids = list(consumer.data.get("job_ids") or [])
             c_ids.append(next_id)
             sb.table(TABLE_CONSUMER).update(
                 {"job_ids": c_ids, "job_count": len(c_ids)}
             ).eq("consumer_name", consumer_name).execute()
+        else:
+            # Ensure consumer row exists so job is attached to customer data
+            sb.table(TABLE_CONSUMER).insert({
+                "consumer_name": consumer_name,
+                "job_ids": [next_id],
+                "job_count": 1,
+            }).execute()
     except Exception as e:
         logger.warning("Failed to update consumer job_ids: %s", e)
 

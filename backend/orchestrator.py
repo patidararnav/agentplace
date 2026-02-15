@@ -264,11 +264,13 @@ def parse_request_text(text: str, fields: Dict[str, str]) -> Dict[str, Any]:
     budget = int(budget_s) if budget_s.isdigit() else max(1, extract_price(text))
     urgency_s = fields.get("URGENCY", "")
     urgency = int(urgency_s) if urgency_s.isdigit() else 3
+    consumer_name = (fields.get("CONSUMER_NAME", "") or "").strip()
     return {
         "service": service or "plumbing",
         "budget": budget if budget > 0 else 200,
         "urgency": max(1, min(5, urgency)),
         "notes": fields.get("NOTES", ""),
+        "consumer_name": consumer_name,
     }
 
 
@@ -429,7 +431,8 @@ def create_orchestrator_agent(
     from Supabase on startup (keys: name, services, aggression, sender, vendor_id).
 
     *on_deal_callback*: optional callable(vendor_name, vendor_id, consumer_addr,
-    service, price, rounds) invoked when a deal closes, e.g. to write to Supabase.
+    service, price, rounds, consumer_name=...) invoked when a deal closes; may return
+    job_id to include in deal_closed message.
     """
 
     kwargs: Dict[str, Any] = {"name": "orchestrator", "seed": seed}
@@ -500,11 +503,27 @@ def create_orchestrator_agent(
             lines.append(f"  X. {d['name']}  {d['outcome']}  ({d['rounds']} rounds)")
         lines.append(f"Best deal: {winner['name']} at ${winner['price']}.")
 
-        await ctx.send(req["customer"], make_chat_message("\n".join([
+        job_id = None
+        if on_deal_callback:
+            w_id = vendor_registry.get(winner['address'], {}).get('vendor_id')
+            try:
+                res = on_deal_callback(
+                    vendor_name=winner['name'], vendor_id=w_id,
+                    consumer_addr=req['customer'],
+                    service=req['service'], price=winner['price'], rounds=winner['rounds'],
+                    consumer_name=req.get('consumer_name') or req['customer'],
+                )
+                job_id = res.get('job_id') if isinstance(res, dict) else res
+            except Exception as e:
+                ctx.logger.warning("on_deal_callback failed: %s", e)
+        deal_lines = [
             "TYPE=deal_closed", f"RID={rid}",
             f"WINNER={winner['name']}", f"WINNER_PRICE={winner['price']}",
             f"TEXT={chr(10).join(lines)}",
-        ])))
+        ]
+        if job_id is not None:
+            deal_lines.append(f"JOB_ID={job_id}")
+        await ctx.send(req["customer"], make_chat_message("\n".join(deal_lines)))
         await ctx.send(winner["address"], make_chat_message(
             f"TYPE=deal_closed\nRID={rid}\nTEXT=You won the bid at ${winner['price']}."))
         for d in deals[1:]:
@@ -512,13 +531,6 @@ def create_orchestrator_agent(
                 f"TYPE=terminated\nRID={rid}\nTEXT=Another vendor was selected at ${winner['price']}."))
         ctx.logger.info("CONSENSUS  rid=%s  winner=%s  price=$%s  deals=%d  failed=%d",
                         rid, winner["name"], winner["price"], len(deals), len(failed))
-        if on_deal_callback:
-            w_id = vendor_registry.get(winner['address'], {}).get('vendor_id')
-            on_deal_callback(
-                vendor_name=winner['name'], vendor_id=w_id,
-                consumer_addr=req['customer'],
-                service=req['service'], price=winner['price'], rounds=winner['rounds'],
-            )
 
     # ── apply convergence ──
 
@@ -548,25 +560,28 @@ def create_orchestrator_agent(
                 req["closed"] = True
                 for v in req["vendors"]:
                     ensure_vendor_state(req, v)["active"] = False
-                await ctx.send(req["customer"], make_chat_message(
-                    _deal_msg(rid, f"Deal closed with {vn} at ${price}. {reason}")))
+                job_id = None
+                if on_deal_callback:
+                    try:
+                        v_id = vendor_registry.get(va, {}).get("vendor_id")
+                        res = on_deal_callback(
+                            vendor_name=vn, vendor_id=v_id,
+                            consumer_addr=req["customer"],
+                            service=req["service"], price=price, rounds=vs["rounds"],
+                            consumer_name=req.get("consumer_name") or req["customer"],
+                        )
+                        job_id = res.get("job_id") if isinstance(res, dict) else res
+                    except Exception as e:
+                        ctx.logger.warning("on_deal_callback failed: %s", e)
+                body = f"Deal closed with {vn} at ${price}. {reason}"
+                if job_id is not None:
+                    msg_lines = ["TYPE=deal_closed", f"RID={rid}", f"JOB_ID={job_id}", f"TEXT={body}"]
+                    await ctx.send(req["customer"], make_chat_message("\n".join(msg_lines)))
+                else:
+                    await ctx.send(req["customer"], make_chat_message(_deal_msg(rid, body)))
                 await ctx.send(va, make_chat_message(
                     f"TYPE=deal_closed\nRID={rid}\nTEXT=Confirmed at ${price}. {reason}"))
                 ctx.logger.info("DEAL  rid=%s  vendor=%s  price=$%s", rid, vn, price)
-                if on_deal_callback:
-                    v_id = vendor_registry.get(va, {}).get('vendor_id')
-                    on_deal_callback(
-                        vendor_name=vn, vendor_id=v_id,
-                        consumer_addr=req['customer'],
-                        service=req['service'], price=price, rounds=vs['rounds'],
-                    )
-                if on_deal_callback:
-                    v_id = vendor_registry.get(va, {}).get("vendor_id")
-                    on_deal_callback(
-                        vendor_name=vn, vendor_id=v_id,
-                        consumer_addr=req["customer"],
-                        service=req["service"], price=price, rounds=vs["rounds"],
-                    )
             return
 
         if action == "terminate":
@@ -624,6 +639,8 @@ def create_orchestrator_agent(
                 weekly_avail = json.loads(avail_raw) if avail_raw else {}
             except (json.JSONDecodeError, TypeError):
                 weekly_avail = {}
+            vid_s = fields.get("VENDOR_ID", "")
+            vendor_id = int(vid_s) if vid_s.isdigit() else None
             vendor_registry[va] = {
                 "name": fields.get("NAME", "Vendor"),
                 "services": services_from_csv(fields.get("SERVICES", "")),
@@ -632,6 +649,8 @@ def create_orchestrator_agent(
                 "sender": sender,
                 "weekly_availability": weekly_avail,
             }
+            if vendor_id is not None:
+                vendor_registry[va]["vendor_id"] = vendor_id
             ctx.logger.info("Registered vendor %s  services=%s",
                             fields.get("NAME", "Vendor"),
                             vendor_registry[va]["services"])
@@ -894,18 +913,21 @@ if __name__ == "__main__":
     except Exception as _e:
         print(f"[orchestrator] Supabase pre-load skipped: {_e}")
 
-    # ── Deal callback: write job to Supabase ──
+    # ── Deal callback: write job to Supabase; return created row (with job_id) for deal_closed message ──
     def _on_deal(**kwargs):
         try:
             from db_helpers import create_job as _cj
-            _cj(
+            consumer_name = (kwargs.get("consumer_name") or kwargs.get("consumer_addr") or "unknown")
+            row = _cj(
                 vendor_id=kwargs.get("vendor_id") or 0,
-                consumer_name=str(kwargs.get("consumer_addr", "unknown")),
+                consumer_name=str(consumer_name),
                 job_type=kwargs.get("service", "unknown"),
                 price=kwargs.get("price", 0),
             )
+            return row  # dict with job_id, or None
         except Exception as exc:
             print(f"[orchestrator] Failed to write job to Supabase: {exc}")
+            return None
 
     _agent = create_orchestrator_agent(
         seed=os.getenv("ORCHESTRATOR_SEED", "orchestrator_seed_treehacks_2026"),

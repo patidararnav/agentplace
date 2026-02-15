@@ -10,6 +10,8 @@ export interface NegotiateParams {
   urgency: number;
   aggression: number;
   notes: string;
+  /** Customer name for DB job linkage; sent to backend when starting negotiation */
+  consumer_name?: string;
 }
 
 export interface NegotiateResponse {
@@ -64,4 +66,49 @@ export function connectNegotiationWS(sessionId: string): WebSocket {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const host = window.location.host;
   return new WebSocket(`${proto}//${host}/ws/negotiate/${sessionId}`);
+}
+
+/** Request body for creating a job (writes to JobsData and updates ConsumerData/VendorData). */
+export interface CreateJobRequest {
+  consumer_name: string;
+  vendor_id?: number;
+  job_type?: string;
+  price?: number;
+  duration_minutes?: number;
+  date?: string | null;
+  start_time?: string;
+  status?: number;
+}
+
+export interface CreateJobResponse {
+  ok: boolean;
+  job_id?: number;
+  job?: Record<string, unknown>;
+  error?: string;
+}
+
+/**
+ * Create a job in Supabase JobsData and attach to ConsumerData (and VendorData if vendor_id set).
+ * Use when accepting a quote that has no job_id (e.g. deal-closed callback didn't run).
+ */
+export async function createJob(
+  payload: CreateJobRequest
+): Promise<CreateJobResponse> {
+  const res = await fetch('/api/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      consumer_name: payload.consumer_name,
+      vendor_id: payload.vendor_id ?? 0,
+      job_type: payload.job_type ?? 'General',
+      price: payload.price ?? 0,
+      duration_minutes: payload.duration_minutes ?? 60,
+      date: payload.date ?? null,
+      start_time: payload.start_time ?? '09:00',
+      status: payload.status ?? 5,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, error: data?.error ?? `HTTP ${res.status}` };
+  return data as CreateJobResponse;
 }

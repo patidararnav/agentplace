@@ -211,6 +211,24 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 - **Vendor calendar**, **customer calendar**, and **job tracking** screens query Supabase and **poll every 5 seconds** so changes (e.g. from another tab or device) appear without refreshing the page.
 - A full page refresh does refetch vendors and customers from the database; the calendar and tracking screens also refetch their data on load. The global "jobs" list in app context is backed by localStorage, so for the latest job data use the calendar or tracking views, which read from Supabase.
 
+### Connecting local agents to Agentverse Inspector
+
+To see your local orchestrator and vendor agents in the [Agentverse Inspector](https://agentverse.ai/inspect):
+
+1. **Keep the backend running** — If you see `[Errno 10048] ... bind on address ('0.0.0.0', 8080)` then something else is using port 8080 and the server exits; agents shut down and the inspector has nothing to connect to. Stop the other process (e.g. close any other terminal running the backend, or run `Get-NetTCPConnection -LocalPort 8080` in PowerShell to find the PID and stop it) and start the backend again.
+
+2. **Use the URL printed in the terminal** — After startup you’ll see a line like:
+   ```text
+   Agent inspector available at https://agentverse.ai/inspect/?uri=http%3A//127.0.0.1%3A8001&address=agent1q0sewr2...
+   ```
+   Open **that full URL** in Chrome. It points the inspector at your local orchestrator (port 8001).
+
+3. **Or add the agent manually** — On [agentverse.ai/inspect](https://agentverse.ai/inspect), look for “Add agent”, “Connect”, or a field to enter an agent URL. Use:
+   - **Orchestrator:** `http://127.0.0.1:8001`
+   - **Vendors (optional):** `http://127.0.0.1:8100`, `http://127.0.0.1:8101`, … (one per vendor).
+
+The inspector does not auto-discover localhost; you must use the link from the terminal or add the URL yourself.
+
 ### What shows in the terminal
 
 Every agent action is logged with color codes:

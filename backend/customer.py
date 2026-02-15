@@ -65,6 +65,7 @@ def create_customer_agent(
     urgency: int = 3,
     aggression: int = 3,
     notes: str = "",
+    consumer_name: str = "",
     orchestrator_address: str,
     port: Optional[int] = None,
     mailbox: bool = False,
@@ -150,7 +151,7 @@ def create_customer_agent(
         )
 
     def _request_text() -> str:
-        return "\n".join([
+        lines = [
             "TYPE=request",
             f"RID={rid}",
             f"SERVICE={service}",
@@ -158,7 +159,10 @@ def create_customer_agent(
             f"URGENCY={urgency}",
             f"NOTES={notes}",
             "TEXT=Please help me find the best vendor and negotiate in natural language.",
-        ])
+        ]
+        if consumer_name:
+            lines.insert(-1, f"CONSUMER_NAME={consumer_name}")
+        return "\n".join(lines)
 
     # ── helpers for result tracking ──
 
@@ -290,11 +294,16 @@ def create_customer_agent(
             _record("winner", fields.get("WINNER", ""))
             wp = fields.get("WINNER_PRICE", "0")
             _record("winner_price", int(wp) if wp.isdigit() else 0)
+            job_id_s = fields.get("JOB_ID", "")
+            winner_job_id = int(job_id_s) if job_id_s.isdigit() else None
+            if winner_job_id is not None:
+                _record("winner_job_id", winner_job_id)
             _push_event({
                 "type": "deal_closed",
                 "text": txt,
                 "winner": fields.get("WINNER", ""),
                 "winner_price": int(wp) if wp.isdigit() else 0,
+                **({"winner_job_id": winner_job_id} if winner_job_id is not None else {}),
             })
             _finish()
             return

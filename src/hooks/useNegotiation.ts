@@ -45,6 +45,8 @@ export interface DoneEvent {
   outcome_text: string;
   winner: string;
   winner_price: number;
+  /** Set when backend created a job for the winning deal; use for quote approval */
+  winner_job_id?: number;
   vendor_results: VendorResultEvent[];
   config: Record<string, unknown>;
 }

@@ -453,7 +453,7 @@ def create_vendor_agent(
         )
 
     def _registration_text() -> str:
-        return "\n".join([
+        lines = [
             "TYPE=vendor_register",
             f"VENDOR={agent.address}",
             f"NAME={name}",
@@ -462,7 +462,10 @@ def create_vendor_agent(
             f"STRATEGY={strategy}",
             f"WEEKLY_AVAILABILITY={json.dumps(_weekly_availability)}",
             "NOTE=Vendor ready for natural-language chat negotiation.",
-        ])
+        ]
+        if vendor_id > 0:
+            lines.append(f"VENDOR_ID={vendor_id}")
+        return "\n".join(lines)
 
     # ── Protocol handlers ──
 

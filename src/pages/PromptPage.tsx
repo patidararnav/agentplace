@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { ArrowRight, Sparkles, Wrench, Calendar, Info } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
@@ -80,7 +80,17 @@ export function PromptPage() {
   const [avgPrice, setAvgPrice] = useState<{ avg_price: number; job_count: number; matched_types: string[] } | null>(null);
   const [avgPriceLoading, setAvgPriceLoading] = useState(false);
   const [selectedAvailability, setSelectedAvailability] = useState<Set<string>>(new Set());
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const [customerOpen, setCustomerOpen] = useState(false);
+  const dragStateRef = useRef<{
+    startDayIndex: number | null;
+    startSlotIndex: number | null;
+    endDayIndex: number | null;
+    endSlotIndex: number | null;
+    mode: 'add' | 'remove';
+  }>({ startDayIndex: null, startSlotIndex: null, endDayIndex: null, endSlotIndex: null, mode: 'add' });
+  /** Faded preview box while dragging — { minDay, maxDay, minSlot, maxSlot } so we can render overlay */
+  const [dragPreview, setDragPreview] = useState<{ minDay: number; maxDay: number; minSlot: number; maxSlot: number } | null>(null);
   const [customerSearch, setCustomerSearch] = useState('');
   const [newCustomerName, setNewCustomerName] = useState('');
   const [creatingCustomer, setCreatingCustomer] = useState(false);
@@ -134,6 +144,102 @@ export function PromptPage() {
     });
   };
 
+  const applyRange = useCallback(
+    (minDay: number, maxDay: number, minSlot: number, maxSlot: number, mode: 'add' | 'remove') => {
+      const days = nextWeekDays();
+      setSelectedAvailability((prev) => {
+        const next = new Set(prev);
+        for (let d = minDay; d <= maxDay; d++) {
+          for (let s = minSlot; s <= maxSlot; s++) {
+            const key = `${dateKey(days[d])}|${SLOT_LABELS[s]}`;
+            if (mode === 'add') next.add(key);
+            else next.delete(key);
+          }
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  const handleCalendarCellMouseDown = useCallback(
+    (dayIndex: number, slotIndex: number) => {
+      const day = weekDays[dayIndex];
+      const key = `${dateKey(day)}|${SLOT_LABELS[slotIndex]}`;
+      const isSelected = selectedAvailability.has(key);
+      const mode: 'add' | 'remove' = isSelected ? 'remove' : 'add';
+      dragStateRef.current = {
+        startDayIndex: dayIndex,
+        startSlotIndex: slotIndex,
+        endDayIndex: dayIndex,
+        endSlotIndex: slotIndex,
+        mode,
+      };
+      setDragPreview({ minDay: dayIndex, maxDay: dayIndex, minSlot: slotIndex, maxSlot: slotIndex });
+    },
+    [weekDays, selectedAvailability]
+  );
+
+  const handleCalendarCellMouseEnter = useCallback((dayIndex: number, slotIndex: number) => {
+    const state = dragStateRef.current;
+    if (state.startDayIndex === null) return;
+    state.endDayIndex = dayIndex;
+    state.endSlotIndex = slotIndex;
+    const minDay = Math.min(state.startDayIndex, dayIndex);
+    const maxDay = Math.max(state.startDayIndex, dayIndex);
+    const minSlot = Math.min(state.startSlotIndex ?? 0, slotIndex);
+    const maxSlot = Math.max(state.startSlotIndex ?? 0, slotIndex);
+    setDragPreview({ minDay, maxDay, minSlot, maxSlot });
+  }, []);
+
+  const handleCalendarMouseUp = useCallback(() => {
+    const state = dragStateRef.current;
+    if (state.startDayIndex === null) return;
+    const minDay = Math.min(state.startDayIndex, state.endDayIndex ?? state.startDayIndex);
+    const maxDay = Math.max(state.startDayIndex, state.endDayIndex ?? state.startDayIndex);
+    const minSlot = Math.min(state.startSlotIndex ?? 0, state.endSlotIndex ?? state.startSlotIndex ?? 0);
+    const maxSlot = Math.max(state.startSlotIndex ?? 0, state.endSlotIndex ?? state.startSlotIndex ?? 0);
+    applyRange(minDay, maxDay, minSlot, maxSlot, state.mode);
+    dragStateRef.current = { startDayIndex: null, startSlotIndex: null, endDayIndex: null, endSlotIndex: null, mode: 'add' };
+    setDragPreview(null);
+  }, [applyRange]);
+
+  useEffect(() => {
+    if (!calendarOpen) return;
+    window.addEventListener('mouseup', handleCalendarMouseUp);
+    return () => window.removeEventListener('mouseup', handleCalendarMouseUp);
+  }, [calendarOpen, handleCalendarMouseUp]);
+
+  /** For each (dayIndex, slotIndex) return position in a vertical run for merged bar styling */
+  const runPosition = useMemo(() => {
+    const map: Record<string, 'only' | 'first' | 'middle' | 'last'> = {};
+    weekDays.forEach((day, dayIndex) => {
+      const selectedSlots = SLOT_LABELS.map((slot, i) => (selectedAvailability.has(`${dateKey(day)}|${slot}`) ? i : -1)).filter((i) => i >= 0);
+      if (selectedSlots.length === 0) return;
+      selectedSlots.sort((a, b) => a - b);
+      const runs: number[][] = [];
+      let run: number[] = [selectedSlots[0]];
+      for (let i = 1; i < selectedSlots.length; i++) {
+        if (selectedSlots[i] === run[run.length - 1] + 1) run.push(selectedSlots[i]);
+        else {
+          runs.push(run);
+          run = [selectedSlots[i]];
+        }
+      }
+      runs.push(run);
+      runs.forEach((r) => {
+        r.forEach((slotIdx, pos) => {
+          const key = `${dayIndex}-${slotIdx}`;
+          if (r.length === 1) map[key] = 'only';
+          else if (pos === 0) map[key] = 'first';
+          else if (pos === r.length - 1) map[key] = 'last';
+          else map[key] = 'middle';
+        });
+      });
+    });
+    return map;
+  }, [weekDays, selectedAvailability]);
+
   const selectEntireDay = (day: Date) => {
     const dayPrefix = `${dateKey(day)}|`;
     setSelectedAvailability((prev) => {
@@ -162,6 +268,7 @@ export function PromptPage() {
       urgency: parseInt(urgency, 10),
       aggression: 3,
       notes: `${trimmed}\n\nCUSTOMER_AVAILABILITY_NEXT_7_DAYS:\n${availabilityNote}`,
+      consumer_name: selectedCustomer?.consumer_name ?? '',
     });
 
     navigate('/customer/agents');
@@ -355,66 +462,21 @@ export function PromptPage() {
             )}
 
             {urgency && (
-              <div className="space-y-2 rounded-xl border border-border/60 bg-card/40 p-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs font-medium text-foreground">Your availability for the next week</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    {selectedAvailability.size} slot{selectedAvailability.size === 1 ? '' : 's'} selected
-                  </p>
-                </div>
-                <p className="text-[11px] text-muted-foreground">
-                  Click cells to mark when you are free.
-                </p>
-                <div className="overflow-x-auto">
-                  <div className="min-w-[760px]">
-                    <div className="grid grid-cols-8 gap-1">
-                      <div className="h-9" />
-                      {weekDays.map((day) => (
-                        <button
-                          key={dateKey(day)}
-                          type="button"
-                          onClick={() => selectEntireDay(day)}
-                          className="h-9 rounded-md bg-muted/40 px-2 py-1 text-center transition-colors hover:bg-muted/70"
-                          aria-label={`Select all time slots on ${day.toDateString()}`}
-                        >
-                          <p className="text-[10px] text-muted-foreground">
-                            {day.toLocaleDateString('en-US', { weekday: 'short' })}
-                          </p>
-                          <p className="text-[11px] font-medium text-foreground">
-                            {day.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}
-                          </p>
-                        </button>
-                      ))}
-                      {SLOT_LABELS.map((slotLabel) => (
-                        <div key={`row-${slotLabel}`} className="contents">
-                          <div
-                            className="h-8 flex items-center justify-end pr-2 text-[10px] text-muted-foreground"
-                          >
-                            {slotLabel}
-                          </div>
-                          {weekDays.map((day) => {
-                            const key = `${dateKey(day)}|${slotLabel}`;
-                            const active = selectedAvailability.has(key);
-                            return (
-                              <button
-                                key={key}
-                                type="button"
-                                onClick={() => toggleAvailabilitySlot(day, slotLabel)}
-                                className={cn(
-                                  'h-8 rounded-sm border transition-colors',
-                                  active
-                                    ? 'border-primary/70 bg-primary/25 hover:bg-primary/30'
-                                    : 'border-border/60 bg-background hover:bg-muted/60'
-                                )}
-                                aria-label={`Toggle ${day.toDateString()} ${slotLabel}`}
-                              />
-                            );
-                          })}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-foreground">Your availability for the next week</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full justify-between gap-2"
+                  onClick={() => setCalendarOpen(true)}
+                >
+                  <span className="text-muted-foreground">
+                    {selectedAvailability.size === 0
+                      ? 'Click to select when you’re free'
+                      : `${selectedAvailability.size} slot${selectedAvailability.size === 1 ? '' : 's'} selected`}
+                  </span>
+                  <Calendar className="size-4 text-muted-foreground" />
+                </Button>
               </div>
             )}
 
@@ -462,6 +524,95 @@ export function PromptPage() {
           </div>
         </div>
       </main>
+
+      {/* Availability calendar popup — drag across cells to select */}
+      <Dialog open={calendarOpen} onOpenChange={setCalendarOpen}>
+        <DialogContent className="max-w-[90vw] sm:max-w-[800px] max-h-[90vh] overflow-auto">
+          <DialogHeader>
+            <DialogTitle>Your availability for the next week</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Click and drag to select a block (e.g. 8am–3pm Mon–Fri). Click a day header to select the whole day.
+          </p>
+          <div className="overflow-x-auto select-none rounded-lg border border-border/60 bg-card/40 p-3">
+            <div className="min-w-[720px] relative">
+              {/* Faded drag preview overlay */}
+              {dragPreview && (
+                <div
+                  className="absolute pointer-events-none rounded-md border-2 border-primary/50 bg-primary/20 z-10 transition-all duration-75"
+                  style={{
+                    left: `${((1 + dragPreview.minDay) / 8) * 100}%`,
+                    width: `${((dragPreview.maxDay - dragPreview.minDay + 1) / 8) * 100}%`,
+                    top: `${((1 + dragPreview.minSlot) / 13) * 100}%`,
+                    height: `${((dragPreview.maxSlot - dragPreview.minSlot + 1) / 13) * 100}%`,
+                  }}
+                  aria-hidden
+                />
+              )}
+              <div className="grid grid-cols-8 gap-x-1 gap-y-0">
+                <div className="h-9" />
+                {weekDays.map((day, dayIndex) => (
+                  <button
+                    key={dateKey(day)}
+                    type="button"
+                    onClick={() => selectEntireDay(day)}
+                    className="h-9 rounded-md bg-muted/40 px-2 py-1 text-center transition-colors hover:bg-muted/70"
+                    aria-label={`Select all time slots on ${day.toDateString()}`}
+                  >
+                    <p className="text-[10px] text-muted-foreground">
+                      {day.toLocaleDateString('en-US', { weekday: 'short' })}
+                    </p>
+                    <p className="text-[11px] font-medium text-foreground">
+                      {day.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}
+                    </p>
+                  </button>
+                ))}
+                {SLOT_LABELS.map((slotLabel, slotIndex) => (
+                  <div key={`row-${slotLabel}`} className="contents">
+                    <div className="h-7 flex items-center justify-end pr-2 text-[10px] text-muted-foreground">
+                      {slotLabel}
+                    </div>
+                    {weekDays.map((day, dayIndex) => {
+                      const key = `${dateKey(day)}|${slotLabel}`;
+                      const active = selectedAvailability.has(key);
+                      const run = runPosition[`${dayIndex}-${slotIndex}`];
+                      return (
+                        <div
+                          key={key}
+                          role="button"
+                          tabIndex={0}
+                          className={cn(
+                            'h-7 border-x border-border/60 transition-colors cursor-pointer',
+                            active
+                              ? 'bg-primary/25 border-primary/50 hover:bg-primary/30'
+                              : 'bg-background border-border/60 hover:bg-muted/60',
+                            active && run === 'only' && 'rounded-md border-y',
+                            active && run === 'first' && 'rounded-t-md border-t',
+                            active && run === 'last' && 'rounded-b-md border-b',
+                            active && run === 'middle' && 'border-t-0'
+                          )}
+                          aria-label={`${day.toDateString()} ${slotLabel}`}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            handleCalendarCellMouseDown(dayIndex, slotIndex);
+                          }}
+                          onMouseEnter={() => handleCalendarCellMouseEnter(dayIndex, slotIndex)}
+                          onClick={(e) => e.preventDefault()}
+                        />
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <Button type="button" onClick={() => setCalendarOpen(false)}>
+              Done
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Customer picker dialog */}
       <Dialog open={customerOpen} onOpenChange={setCustomerOpen}>

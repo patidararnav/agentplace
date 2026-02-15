@@ -22,18 +22,24 @@ const SYSTEM_AGENTS = [
   { id: 'ranking' as StepId, label: 'Ranking', icon: ListOrdered, angle: 180, color: '#79ffe1' },
 ];
 
-/** Convert backend results to the VendorQuote[] format the results page expects */
+/** Convert backend results to the VendorQuote[] format the results page expects.
+ * When outcome has winner_job_id, the quote matching the winner gets that job_id so
+ * "Accept" can update the job status in the DB. */
 function buildQuotes(
   vendorResults: VendorResultEvent[],
   vendorNegotiations: Record<string, { messages: NegotiationMessage[]; originalPrice?: number }>,
+  outcome?: { winner?: string; winner_job_id?: number } | null,
 ): VendorQuote[] {
   const deals = vendorResults
     .filter((v) => v.outcome === 'deal' && v.price > 0)
     .sort((a, b) => a.price - b.price);
+  const winnerName = outcome?.winner;
+  const winnerJobId = outcome?.winner_job_id;
 
   return deals.map((d, idx) => {
     const neg = vendorNegotiations[d.vendor_address] || { messages: [] };
     const origPrice = neg.originalPrice || Math.round(d.price * 1.2);
+    const isWinner = winnerName != null && d.vendor_name === winnerName;
 
     // Build agent thoughts from the negotiation messages
     const customerThoughts: AgentThought[] = neg.messages
@@ -57,9 +63,14 @@ function buildQuotes(
       name: d.vendor_name,
       price: d.price,
       originalPrice: origPrice,
-      dateTime: new Date(Date.now() + (idx + 2) * 86400000).toISOString(),
+      dateTime: (() => {
+        const d = new Date(Date.now() + (idx + 2) * 86400000);
+        d.setHours(10, 0, 0, 0); // default to 10:00 AM local
+        return d.toISOString();
+      })(),
       durationMinutes: 90,
       vendorId: idx + 1,
+      ...(isWinner && winnerJobId != null ? { job_id: winnerJobId } : {}),
       negotiationMessages: neg.messages,
       customerAgentThoughts: customerThoughts,
       vendorAgentThoughts: vendorThoughts,
@@ -76,6 +87,7 @@ export function AgentMatchingPage() {
   const { lastPrompt, negotiateParams, setNegotiationResults } = useApp();
   const negotiation = useNegotiation(negotiateParams);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const logScrollAreaRef = useRef<HTMLDivElement>(null);
   const hasStoredResults = useRef(false);
   const [resultsReady, setResultsReady] = useState(false);
 
@@ -107,9 +119,21 @@ export function AgentMatchingPage() {
     return () => clearInterval(id);
   }, [negotiation.error]);
 
-  // Auto-scroll log
+  // Auto-scroll log to show most recent entry (scroll the ScrollArea viewport to bottom)
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const root = logScrollAreaRef.current;
+    const viewport =
+      root?.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]') ??
+      (root?.firstElementChild as HTMLElement | null);
+    if (viewport) {
+      const run = () => {
+        viewport.scrollTop = viewport.scrollHeight;
+      };
+      requestAnimationFrame(run);
+      const t = setTimeout(run, 80);
+      return () => clearTimeout(t);
+    }
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [negotiation.logs.length]);
 
   // Store results when negotiation completes (but don't navigate)
@@ -117,7 +141,16 @@ export function AgentMatchingPage() {
     if (negotiation.isComplete && negotiation.outcome && !hasStoredResults.current) {
       hasStoredResults.current = true;
 
-      const quotes = buildQuotes(negotiation.vendorResults, negotiation.vendors);
+      const quotes = buildQuotes(
+        negotiation.vendorResults,
+        negotiation.vendors,
+        negotiation.outcome
+          ? {
+              winner: negotiation.outcome.winner,
+              winner_job_id: negotiation.outcome.winner_job_id,
+            }
+          : null,
+      );
 
       // Extract vendors that were schedule-unavailable
       const unavailableVendors: UnavailableVendor[] = negotiation.vendorResults
@@ -156,7 +189,7 @@ export function AgentMatchingPage() {
   }, [negotiation.isComplete, negotiation.outcome, negotiation.vendorResults, negotiation.vendors, setNegotiationResults]);
 
   return (
-    <div className="min-h-svh bg-background flex flex-col">
+    <div className="h-svh overflow-hidden bg-background flex flex-col">
       {/* Header */}
       <header className="px-6 py-4 flex-shrink-0 border-b border-border/40">
         <div className="flex items-center justify-between">
@@ -341,9 +374,9 @@ export function AgentMatchingPage() {
           </div>
         </div>
 
-        {/* Right: Activity log */}
-        <div className="lg:w-[420px] border-t lg:border-t-0 lg:border-l border-border/40 flex flex-col bg-card/30">
-          <div className="px-4 py-3 border-b border-border/40 flex items-center gap-2">
+        {/* Right: Activity log — fills from loading bar down to View Quotes */}
+        <div className="lg:w-[420px] border-t lg:border-t-0 lg:border-l border-border/40 flex flex-col min-h-0 flex-1 bg-card/30 flex-shrink-0">
+          <div className="px-4 py-3 border-b border-border/40 flex items-center gap-2 flex-shrink-0">
             <div className={cn(
               "size-2 rounded-full",
               negotiation.isComplete ? "bg-[var(--success)]" : "bg-[var(--success)] animate-pulse"
@@ -356,7 +389,7 @@ export function AgentMatchingPage() {
             </span>
           </div>
 
-          <ScrollArea className="flex-1">
+          <ScrollArea ref={logScrollAreaRef} className="flex-1 min-h-0">
             <div className="p-4 space-y-2.5 font-mono text-sm">
               {negotiation.isConnecting && (
                 <div className="flex gap-3 opacity-60">
