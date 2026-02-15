@@ -1,10 +1,11 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Sparkles, Bot, CheckCircle2, Loader2, Circle,
-  MessageSquare, Search, ListOrdered, AlertCircle,
+  MessageSquare, Search, ListOrdered, AlertCircle, ArrowRight,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useApp } from '@/context/AppContext';
 import type { NegotiationResults } from '@/context/AppContext';
@@ -75,17 +76,18 @@ export function AgentMatchingPage() {
   const { lastPrompt, negotiateParams, setNegotiationResults } = useApp();
   const negotiation = useNegotiation(negotiateParams);
   const logEndRef = useRef<HTMLDivElement>(null);
-  const hasNavigated = useRef(false);
+  const hasStoredResults = useRef(false);
+  const [resultsReady, setResultsReady] = useState(false);
 
   // Auto-scroll log
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [negotiation.logs.length]);
 
-  // Navigate to results when done
+  // Store results when negotiation completes (but don't navigate)
   useEffect(() => {
-    if (negotiation.isComplete && negotiation.outcome && !hasNavigated.current) {
-      hasNavigated.current = true;
+    if (negotiation.isComplete && negotiation.outcome && !hasStoredResults.current) {
+      hasStoredResults.current = true;
 
       const quotes = buildQuotes(negotiation.vendorResults, negotiation.vendors);
       const totalVendors = Math.max(
@@ -110,11 +112,9 @@ export function AgentMatchingPage() {
       };
 
       setNegotiationResults(results);
-
-      // Small delay so user sees the "Done" state
-      setTimeout(() => navigate('/customer/results'), 1500);
+      setResultsReady(true);
     }
-  }, [negotiation.isComplete, negotiation.outcome, negotiation.vendorResults, negotiation.vendors, navigate, setNegotiationResults]);
+  }, [negotiation.isComplete, negotiation.outcome, negotiation.vendorResults, negotiation.vendors, setNegotiationResults]);
 
   const steps = SYSTEM_AGENTS.map((a) => ({
     ...a,
@@ -363,6 +363,20 @@ export function AgentMatchingPage() {
           </ScrollArea>
         </div>
       </main>
+
+      {/* View Quotes button — appears when negotiation is done */}
+      {resultsReady && (
+        <div className="px-6 py-4 border-t border-border/40 flex-shrink-0">
+          <Button
+            className="w-full gap-2 text-sm font-semibold"
+            size="lg"
+            onClick={() => navigate('/customer/results')}
+          >
+            View Quotes
+            <ArrowRight className="size-4" />
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

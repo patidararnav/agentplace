@@ -197,6 +197,8 @@ def create_orchestrator_agent(
     network: Optional[str] = None,
     readme_path: Optional[str] = None,
     publish_agent_details: bool = False,
+    event_queue: Optional[Any] = None,
+    on_deal_callback: Optional[Any] = None,
 ) -> Agent:
     """Return a fully-wired orchestrator Agent.
 
@@ -233,6 +235,14 @@ def create_orchestrator_agent(
     agent = Agent(**kwargs)
     vendor_registry: Dict[str, Dict[str, Any]] = {}
     requests: Dict[str, Dict[str, Any]] = {}
+
+    def _push_event(evt: Dict[str, Any]) -> None:
+        """Push a real-time event to the WebSocket queue (non-blocking)."""
+        if event_queue is not None:
+            try:
+                event_queue.put_nowait(evt)
+            except Exception:
+                pass
 
     # ── consensus helpers (only used when consensus_mode=True) ──
 

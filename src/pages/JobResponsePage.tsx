@@ -72,7 +72,7 @@ export function JobResponsePage() {
             variant="ghost"
             size="icon"
             className="size-8"
-            onClick={() => navigate('/')}
+            onClick={() => navigate('/customer/agents')}
           >
             <ArrowLeft className="size-4" />
           </Button>
