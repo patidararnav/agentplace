@@ -30,6 +30,9 @@ import asyncio
 import logging
 import os
 import sys
+
+# Fix gRPC c-ares DNS resolver failures (use native system resolver instead)
+os.environ.setdefault("GRPC_DNS_RESOLVER", "native")
 from contextlib import suppress
 from typing import Any, Dict
 from uuid import uuid4
