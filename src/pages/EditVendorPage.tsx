@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { updateVendor } from "@/lib/supabase-data";
 import { useApp } from "@/context/AppContext";
 
@@ -16,8 +17,12 @@ const defaultWeekly: Record<string, string[] | null> = Object.fromEntries(
 
 type JobTypeRow = { type: string; price: string; duration_minutes: string };
 
-function vendorToFormState(v: { name: string; max_distance_miles: number; home_location: { lat: number; lng: number }; experience_years: number; negotiation_aggression: number; weekly_availability: Record<string, string[] | null>; job_types: { type: string; price: number; duration_minutes: number }[] }) {
+function vendorToFormState(v: { name: string; max_distance_miles: number; home_location: { lat: number; lng: number }; experience_years: number; negotiation_aggression: number; pricing_strategy?: string; weekly_availability: Record<string, string[] | null>; job_types: { type: string; price: number; duration_minutes: number }[] }) {
   const weekly = { ...defaultWeekly, ...(v.weekly_availability || {}) };
+  const pricingStrategy: "maximize_jobs" | "high_value_only" | "yield_optimizer" =
+    v.pricing_strategy === "high_value_only" || v.pricing_strategy === "yield_optimizer"
+      ? v.pricing_strategy
+      : "maximize_jobs";
   const jobTypes: JobTypeRow[] =
     v.job_types?.length > 0
       ? v.job_types.map((jt) => ({
@@ -33,6 +38,7 @@ function vendorToFormState(v: { name: string; max_distance_miles: number; home_l
     lng: String(v.home_location?.lng ?? "-122.4194"),
     experienceYears: String(v.experience_years ?? 5),
     negotiationAggression: String(v.negotiation_aggression ?? 1),
+    pricingStrategy,
     weekly,
     jobTypes,
   };
@@ -48,6 +54,7 @@ export function EditVendorPage() {
   const [lng, setLng] = useState("-122.4194");
   const [experienceYears, setExperienceYears] = useState("5");
   const [negotiationAggression, setNegotiationAggression] = useState("1");
+  const [pricingStrategy, setPricingStrategy] = useState<"maximize_jobs" | "high_value_only" | "yield_optimizer">("maximize_jobs");
   const [weekly, setWeekly] = useState<Record<string, string[] | null>>(defaultWeekly);
   const [jobTypes, setJobTypes] = useState<JobTypeRow[]>([{ type: "", price: "", duration_minutes: "" }]);
   const [submitting, setSubmitting] = useState(false);
@@ -66,6 +73,7 @@ export function EditVendorPage() {
     setLng(s.lng);
     setExperienceYears(s.experienceYears);
     setNegotiationAggression(s.negotiationAggression);
+    setPricingStrategy(s.pricingStrategy);
     setWeekly(s.weekly);
     setJobTypes(s.jobTypes);
     setInitialized(true);
@@ -123,6 +131,7 @@ export function EditVendorPage() {
       home_location: { lat: Number(lat) || 0, lng: Number(lng) || 0 },
       experience_years: Number(experienceYears) || 0,
       negotiation_aggression: Number(negotiationAggression) || 1,
+      pricing_strategy: pricingStrategy,
       weekly_availability: weekly,
       job_types: jobTypesPayload,
       job_ids: selectedVendor.job_ids ?? [],
@@ -240,6 +249,24 @@ export function EditVendorPage() {
                   value={negotiationAggression}
                   onChange={(e) => setNegotiationAggression(e.target.value)}
                 />
+              </div>
+              <div>
+                <Label htmlFor="pricing_strategy">Pricing strategy</Label>
+                <Select value={pricingStrategy} onValueChange={(v) => setPricingStrategy(v as typeof pricingStrategy)}>
+                  <SelectTrigger id="pricing_strategy" className="bg-card">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="maximize_jobs">Maximize number of jobs</SelectItem>
+                    <SelectItem value="high_value_only">High value jobs only</SelectItem>
+                    <SelectItem value="yield_optimizer">Yield optimizer</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {pricingStrategy === "maximize_jobs" && "More flexible pricing to increase win rate, including near-base offers."}
+                  {pricingStrategy === "high_value_only" && "Holds firmer on price and prioritizes higher-paying jobs."}
+                  {pricingStrategy === "yield_optimizer" && "Drops prices for dates where the vendor has more than 80% free capacity."}
+                </p>
               </div>
             </CardContent>
           </Card>

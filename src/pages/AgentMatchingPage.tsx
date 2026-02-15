@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useApp } from '@/context/AppContext';
-import type { NegotiationResults } from '@/context/AppContext';
+import type { NegotiationResults, UnavailableVendor } from '@/context/AppContext';
 import { useNegotiation } from '@/hooks/useNegotiation';
 import type { StepId, VendorResultEvent } from '@/hooks/useNegotiation';
 import type { VendorQuote, NegotiationMessage, AgentThought } from '@/types';
@@ -90,10 +90,20 @@ export function AgentMatchingPage() {
       hasStoredResults.current = true;
 
       const quotes = buildQuotes(negotiation.vendorResults, negotiation.vendors);
+
+      // Extract vendors that were schedule-unavailable
+      const unavailableVendors: UnavailableVendor[] = negotiation.vendorResults
+        .filter((v) => v.outcome === 'no_availability')
+        .map((v) => ({
+          name: v.vendor_name,
+          reason: 'No availability for your times',
+        }));
+
       const totalVendors = Math.max(
         Object.keys(negotiation.vendors).length,
         negotiation.vendorResults.length,
       );
+      const negotiatedCount = totalVendors - unavailableVendors.length;
       const deals = quotes.length;
       const avgSavings = deals > 0
         ? Math.round(quotes.reduce((acc, q) => acc + ((q.originalPrice - q.price) / q.originalPrice) * 100, 0) / deals)
@@ -101,9 +111,10 @@ export function AgentMatchingPage() {
 
       const results: NegotiationResults = {
         quotes,
+        unavailableVendors,
         stats: {
           vendorsSearched: totalVendors,
-          vendorsNegotiated: totalVendors,
+          vendorsNegotiated: negotiatedCount,
           avgSavings,
         },
         outcome: negotiation.outcome.outcome,

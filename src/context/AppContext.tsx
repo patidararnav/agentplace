@@ -4,9 +4,16 @@ import type { UserLocation, VendorData, CustomerData, JobData, VendorQuote } fro
 import { fetchVendors, fetchCustomers, fetchJobs } from '@/lib/supabase-data';
 import type { NegotiateParams } from '@/lib/api';
 
+/** Vendor that was service-matched but had no schedule overlap */
+export interface UnavailableVendor {
+  name: string;
+  reason: string;
+}
+
 /** Negotiation results stored after the agent orchestration completes */
 export interface NegotiationResults {
   quotes: VendorQuote[];
+  unavailableVendors: UnavailableVendor[];
   stats: { vendorsSearched: number; vendorsNegotiated: number; avgSavings: number };
   outcome: string;
   winner: string;

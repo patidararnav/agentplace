@@ -134,6 +134,17 @@ export function PromptPage() {
     });
   };
 
+  const selectEntireDay = (day: Date) => {
+    const dayPrefix = `${dateKey(day)}|`;
+    setSelectedAvailability((prev) => {
+      const next = new Set(prev);
+      SLOT_LABELS.forEach((slotLabel) => {
+        next.add(`${dayPrefix}${slotLabel}`);
+      });
+      return next;
+    });
+  };
+
   const handleSubmit = () => {
     const trimmed = prompt.trim();
     if (!trimmed) return;
@@ -359,9 +370,12 @@ export function PromptPage() {
                     <div className="grid grid-cols-8 gap-1">
                       <div className="h-9" />
                       {weekDays.map((day) => (
-                        <div
+                        <button
                           key={dateKey(day)}
-                          className="h-9 rounded-md bg-muted/40 px-2 py-1 text-center"
+                          type="button"
+                          onClick={() => selectEntireDay(day)}
+                          className="h-9 rounded-md bg-muted/40 px-2 py-1 text-center transition-colors hover:bg-muted/70"
+                          aria-label={`Select all time slots on ${day.toDateString()}`}
                         >
                           <p className="text-[10px] text-muted-foreground">
                             {day.toLocaleDateString('en-US', { weekday: 'short' })}
@@ -369,7 +383,7 @@ export function PromptPage() {
                           <p className="text-[11px] font-medium text-foreground">
                             {day.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}
                           </p>
-                        </div>
+                        </button>
                       ))}
                       {SLOT_LABELS.map((slotLabel) => (
                         <div key={`row-${slotLabel}`} className="contents">

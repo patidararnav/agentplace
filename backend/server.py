@@ -37,7 +37,7 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Ensure the backend package is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -174,6 +174,8 @@ async def on_startup() -> None:
                 "services": services,
                 "base_prices": base_prices,
                 "aggression": cfg["aggression"],
+                "pricing_strategy": cfg.get("pricing_strategy", "maximize_jobs"),
+                "weekly_availability": cfg.get("weekly_availability", {}),
             })
         except Exception as exc:
             log.warning("\033[33m[vendor]\033[0m Skipping malformed vendor row: %s", exc)
@@ -191,6 +193,9 @@ async def on_startup() -> None:
             network="testnet",
             publish_agent_details=False,
             registration_policy=AlmanacApiRegistrationPolicy(),
+            weekly_availability=vdef.get("weekly_availability", {}),
+            pricing_strategy=vdef.get("pricing_strategy", "maximize_jobs"),
+            vendor_id=int(vdef.get("vendor_id", 0) or 0),
         )
 
         _vendor_agents.append(va)
@@ -610,10 +615,13 @@ _next_vendor_port = VENDOR_PORT_START
 
 
 class CreateVendorRequest(BaseModel):
+    vendor_id: int = 0
     name: str
     services: list[str]
     base_prices: Dict[str, int]
     aggression: int = 3
+    pricing_strategy: str = "maximize_jobs"
+    weekly_availability: Dict[str, Any] = Field(default_factory=dict)
 
 
 class AddServiceRequest(BaseModel):
@@ -634,8 +642,8 @@ async def register_vendor(req: CreateVendorRequest) -> Dict[str, Any]:
     seed = f"vendor_dynamic_{req.name.lower().replace(' ', '_')}_{port}"
 
     log.info(
-        "\033[35m[API]\033[0m POST /api/vendors  name=%s  services=%s  aggression=%s  port=%s",
-        req.name, req.services, req.aggression, port,
+        "\033[35m[API]\033[0m POST /api/vendors  name=%s  services=%s  aggression=%s  strategy=%s  port=%s",
+        req.name, req.services, req.aggression, req.pricing_strategy, port,
     )
 
     va = create_vendor_agent(
@@ -650,6 +658,9 @@ async def register_vendor(req: CreateVendorRequest) -> Dict[str, Any]:
         network="testnet",
         publish_agent_details=False,
         registration_policy=AlmanacApiRegistrationPolicy(),
+        pricing_strategy=req.pricing_strategy,
+        weekly_availability=req.weekly_availability or {},
+        vendor_id=req.vendor_id or 0,
     )
 
     # Fix event-loop mismatch (same issue as persistent agents)
@@ -658,12 +669,15 @@ async def register_vendor(req: CreateVendorRequest) -> Dict[str, Any]:
         va._loop = running_loop
 
     vdef = {
+        "vendor_id": req.vendor_id,
         "name": req.name,
         "seed": seed,
         "port": port,
         "services": req.services,
         "base_prices": req.base_prices,
         "aggression": req.aggression,
+        "pricing_strategy": req.pricing_strategy,
+        "weekly_availability": req.weekly_availability or {},
     }
     VENDOR_DEFS.append(vdef)
     _vendor_agents.append(va)
@@ -679,6 +693,7 @@ async def register_vendor(req: CreateVendorRequest) -> Dict[str, Any]:
         "address": va.address,
         "port": port,
         "services": req.services,
+        "pricing_strategy": req.pricing_strategy,
     }
 
 

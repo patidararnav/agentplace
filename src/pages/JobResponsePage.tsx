@@ -13,6 +13,7 @@ import {
   User,
   ArrowLeft,
   Calendar,
+  CalendarX2,
   MessageSquare,
 } from 'lucide-react';
 import { NegotiationChatModal } from '@/components/NegotiationChatModal';
@@ -55,6 +56,7 @@ export function JobResponsePage() {
 
   const stats = negotiationResults?.stats ?? { vendorsSearched: 0, vendorsNegotiated: 0, avgSavings: 0 };
   const quotes = negotiationResults?.quotes ?? [];
+  const unavailableVendors = negotiationResults?.unavailableVendors ?? [];
 
   async function handleAccept(q: VendorQuote) {
     if (q.job_id != null) {
@@ -219,6 +221,37 @@ export function JobResponsePage() {
               </Card>
             );
           })}
+
+          {/* Unavailable vendors (schedule mismatch) */}
+          {unavailableVendors.length > 0 && (
+            <div className="space-y-3 pt-2">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                No availability for your times
+              </p>
+              {unavailableVendors.map((v) => (
+                <Card
+                  key={v.name}
+                  className="border-border/20 bg-muted/20 opacity-50"
+                >
+                  <CardContent className="p-4">
+                    <div className="flex items-center gap-3">
+                      <div className="size-9 rounded-full bg-muted/60 flex items-center justify-center">
+                        <CalendarX2 className="size-4 text-muted-foreground/60" />
+                      </div>
+                      <div>
+                        <h4 className="font-medium text-muted-foreground">
+                          {v.name}
+                        </h4>
+                        <p className="text-xs text-muted-foreground/50 mt-0.5">
+                          {v.reason}
+                        </p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
         </div>
       </main>
 

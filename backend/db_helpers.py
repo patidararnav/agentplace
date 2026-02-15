@@ -64,7 +64,8 @@ def load_vendors_for_service(service_type: str) -> List[Dict[str, Any]]:
 def vendor_row_to_agent_config(row: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a Supabase VendorData row into kwargs for create_vendor_agent.
 
-    Returns a dict with keys: name, services, base_prices, aggression, vendor_id.
+    Returns a dict with keys: name, services, base_prices, aggression,
+    pricing_strategy, vendor_id.
     """
     job_types = row.get("job_types") or []
     services = []
@@ -79,6 +80,15 @@ def vendor_row_to_agent_config(row: Dict[str, Any]) -> Dict[str, Any]:
 
     aggression = int(row.get("negotiation_aggression") or 2)
     aggression = max(1, min(5, aggression))
+    strategy = (
+        str(row.get("pricing_strategy") or "maximize_jobs")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+    if strategy not in {"maximize_jobs", "high_value_only", "yield_optimizer"}:
+        strategy = "maximize_jobs"
 
     return {
         "vendor_id": int(row.get("vendor_id", 0)),
@@ -86,6 +96,7 @@ def vendor_row_to_agent_config(row: Dict[str, Any]) -> Dict[str, Any]:
         "services": services,
         "base_prices": base_prices,
         "aggression": aggression,
+        "pricing_strategy": strategy,
         "max_distance_miles": int(row.get("max_distance_miles") or 0),
         "home_location": row.get("home_location") or {"lat": 0, "lng": 0},
         "experience_years": int(row.get("experience_years") or 0),
